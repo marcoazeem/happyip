@@ -1,0 +1,20 @@
+[package]
+name = "happyip"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+dns-lookup = "4.0.2"
+eframe = "0.34"
+egui_extras = "0.34"
+egui_software_backend = "0.0.3"
+if-addrs = "0.15.0"
+mac_address = "1.2.1"
+rfd = "0.17.2"
+webbrowser = "1"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
