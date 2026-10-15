@@ -1,6 +1,7 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod demo;
 mod identify;
 mod netbios;
 mod probe;
@@ -34,9 +35,27 @@ fn main() {
             let range = rest[..report_at.unwrap_or(rest.len())].join(",");
             run_cli(range, report);
         }
+        Some("--demo-report") => {
+            let path = args.get(2).map(String::as_str).unwrap_or("happyip-demo-report.html");
+            let results = demo::results();
+            let alive: Vec<&HostResult> = results.iter().filter(|r| r.alive.is_some()).collect();
+            let meta = report::ReportMeta {
+                range: demo::RANGE.into(),
+                generated: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+                scanned_from: "IT-ADMIN01".into(),
+                hosts_scanned: results.len(),
+            };
+            std::fs::write(path, report::html(&meta, &alive)).expect("write demo report");
+            eprintln!("Demo report written to {path}");
+        }
         Some(SOFTWARE_FLAG) => run_software(),
         _ => run_gpu(),
     }
+}
+
+/// `--demo` fills the window with a fictional network instead of scanning.
+fn demo_mode() -> bool {
+    std::env::args().any(|a| a == "--demo")
 }
 
 fn viewport() -> egui::ViewportBuilder {
@@ -56,7 +75,14 @@ fn run_gpu() {
         // CPU-rendering mode instead.
         eprintln!("GPU renderer unavailable ({e}); falling back to software rendering");
         let relaunched = std::env::current_exe()
-            .and_then(|exe| std::process::Command::new(exe).arg(SOFTWARE_FLAG).spawn());
+            .and_then(|exe| {
+                let mut cmd = std::process::Command::new(exe);
+                cmd.arg(SOFTWARE_FLAG);
+                if demo_mode() {
+                    cmd.arg("--demo");
+                }
+                cmd.spawn()
+            });
         if let Err(spawn_err) = relaunched {
             show_fatal(&format!("{e}\n\nSoftware fallback also failed: {spawn_err}"));
         }
@@ -125,7 +151,7 @@ impl App {
             .first()
             .map(LocalInterface::suggested_range)
             .unwrap_or_else(|| "192.168.1.0/24".into());
-        Self {
+        let mut app = Self {
             ctx,
             interfaces,
             selected_iface: 0,
@@ -147,7 +173,21 @@ impl App {
             sort: (SortKey::Ip, true),
             selected_row: None,
             scanned_range: String::new(),
+        };
+        if demo_mode() {
+            app.interfaces = vec![LocalInterface {
+                name: "Ethernet".into(),
+                ip: std::net::Ipv4Addr::new(10, 20, 0, 50),
+                prefix: 24,
+                mac: None,
+            }];
+            app.results = demo::results();
+            app.total = app.results.len();
+            app.range = demo::RANGE.into();
+            app.scanned_range = demo::RANGE.into();
+            app.status = format!("Done: {} scanned, {} alive in 3.9s (demo data)", app.total, app.alive_count());
         }
+        app
     }
 
     fn parse_ports(&self) -> Result<Vec<u16>, String> {

@@ -65,7 +65,7 @@ pub struct HostResult {
 }
 
 impl HostResult {
-    fn new(ip: Ipv4Addr) -> Self {
+    pub(crate) fn new(ip: Ipv4Addr) -> Self {
         Self {
             ip,
             alive: None,
