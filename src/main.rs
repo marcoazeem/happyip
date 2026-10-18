@@ -8,6 +8,7 @@ mod probe;
 mod report;
 mod scanner;
 mod targets;
+mod wmi;
 
 use std::cmp::Ordering;
 use std::time::Instant;
@@ -129,7 +130,7 @@ struct App {
     ports: String,
     resolve_names: bool,
     netbios: bool,
-    remote_sessions: bool,
+    admin_queries: bool,
     show_dead: bool,
     filter: String,
 
@@ -161,7 +162,7 @@ impl App {
             ports: DEFAULT_PORTS.into(),
             resolve_names: true,
             netbios: true,
-            remote_sessions: cfg!(windows),
+            admin_queries: cfg!(windows),
             show_dead: false,
             filter: String::new(),
             results: Vec::new(),
@@ -227,7 +228,7 @@ impl App {
             ports,
             resolve_names: self.resolve_names,
             netbios: self.netbios,
-            remote_sessions: self.remote_sessions,
+            admin_queries: self.admin_queries,
             local: self.interfaces.iter().map(|i| (i.ip, i.mac.clone())).collect(),
             gateway: identify::default_gateway(),
         };
@@ -305,21 +306,22 @@ impl App {
         else {
             return;
         };
-        let mut out = String::from("IP,Status,Device Type,OS,Computer Name,Users,MAC,Vendor,Hostname,NetBIOS Name,Workgroup,Ping,TTL,Open Ports,Web Banner,Detected By\n");
+        let mut out = String::from("IP,Status,Device Type,OS,Computer Name,Users,Domain,MAC,Vendor,Model,Hostname,NetBIOS Name,Ping,TTL,Open Ports,Web Banner,Detected By\n");
         for &i in &self.visible_rows() {
             let r = &self.results[i];
             let fields = [
                 r.ip.to_string(),
                 if r.alive.is_some() { "Alive" } else { "Dead" }.into(),
                 r.device_text(),
-                r.device.as_ref().and_then(|d| d.os).unwrap_or_default().to_string(),
+                r.os_text().unwrap_or_default(),
                 r.display_name().unwrap_or_default(),
                 r.users.join("; "),
+                r.domain_text().unwrap_or_default(),
                 r.mac.clone().unwrap_or_default(),
                 r.vendor.clone().unwrap_or_default(),
+                r.model.clone().unwrap_or_default(),
                 r.hostname.clone().unwrap_or_default(),
                 r.netbios_name.clone().unwrap_or_default(),
-                r.workgroup.clone().unwrap_or_default(),
                 r.ping_text(),
                 r.ttl.map(|t| t.to_string()).unwrap_or_default(),
                 r.ports_text(),
@@ -434,8 +436,8 @@ impl App {
                 ui.checkbox(&mut self.netbios, "NetBIOS (names & users)")
                     .on_hover_text("Asks each host for its computer name, workgroup and logged-in user over UDP 137. Works mainly for Windows and Samba hosts.");
                 if cfg!(windows) {
-                    ui.checkbox(&mut self.remote_sessions, "Query sessions")
-                        .on_hover_text("Runs `query user /server:<ip>` to list logged-in users. Needs admin rights on the target (e.g. a domain admin account).");
+                    ui.checkbox(&mut self.admin_queries, "Admin queries")
+                        .on_hover_text("For Windows PCs, asks each machine over WMI for its MAC address (works across VLANs), logged-in user, domain, OS and model, and lists sessions with `query user`. Run HappyIP as a domain admin (or an account with admin rights on the targets).");
                 }
             });
         });
@@ -484,7 +486,7 @@ impl App {
             ("Ping", Some(SortKey::Ping)),
             ("TTL", None),
             ("Hostname", Some(SortKey::Hostname)),
-            ("Workgroup", None),
+            ("Domain / workgroup", None),
             ("Open ports", None),
             ("Seen via", None),
         ];
@@ -543,9 +545,12 @@ impl App {
                     row.col(|ui| {
                         let label = ui.label(r.device_text());
                         if let Some(d) = &r.device {
+                            let mut tip: Vec<String> = r.os_text().into_iter().chain(r.model.clone()).collect();
                             if !d.basis.is_empty() {
-                                let os = d.os.map(|o| format!("{o}\n")).unwrap_or_default();
-                                label.on_hover_text(format!("{os}Based on: {}", d.basis.join(", ")));
+                                tip.push(format!("Based on: {}", d.basis.join(", ")));
+                            }
+                            if !tip.is_empty() {
+                                label.on_hover_text(tip.join("\n"));
                             }
                         }
                     });
@@ -571,7 +576,7 @@ impl App {
                         ui.label(r.hostname.as_deref().unwrap_or(""));
                     });
                     row.col(|ui| {
-                        ui.label(r.workgroup.as_deref().unwrap_or(""));
+                        ui.label(r.domain_text().unwrap_or_default());
                     });
                     row.col(|ui| {
                         ui.label(r.ports_text());
@@ -670,7 +675,7 @@ fn run_cli(range: String, report_path: Option<std::path::PathBuf>) {
         ports: DEFAULT_PORTS.split(", ").filter_map(|p| p.parse().ok()).collect(),
         resolve_names: true,
         netbios: true,
-        remote_sessions: cfg!(windows),
+        admin_queries: cfg!(windows),
         local: interfaces.iter().map(|i| (i.ip, i.mac.clone())).collect(),
         gateway: identify::default_gateway(),
     };

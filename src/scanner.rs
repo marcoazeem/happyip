@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::identify::{self, Device};
 use crate::netbios;
+use crate::wmi;
 use crate::probe::{self, ArpCache};
 
 #[derive(Clone)]
@@ -20,7 +21,8 @@ pub struct ScanConfig {
     pub ports: Vec<u16>,
     pub resolve_names: bool,
     pub netbios: bool,
-    pub remote_sessions: bool,
+    /// Domain-admin queries (WMI inventory + `query user`), Windows only.
+    pub admin_queries: bool,
     /// This machine's addresses and their MACs (they never appear in ARP).
     pub local: HashMap<Ipv4Addr, Option<String>>,
     pub gateway: Option<Ipv4Addr>,
@@ -62,6 +64,12 @@ pub struct HostResult {
     pub vendor: Option<String>,
     pub http_banner: Option<String>,
     pub device: Option<Device>,
+    /// AD/DNS domain the machine belongs to (WMI or its DNS name).
+    pub domain: Option<String>,
+    /// Exact OS from WMI, e.g. "Windows 11 Pro".
+    pub os_name: Option<String>,
+    /// Hardware manufacturer + model from WMI, e.g. "Dell Inc. OptiPlex 7090".
+    pub model: Option<String>,
 }
 
 impl HostResult {
@@ -80,6 +88,9 @@ impl HostResult {
             vendor: None,
             http_banner: None,
             device: None,
+            domain: None,
+            os_name: None,
+            model: None,
         }
     }
 
@@ -99,6 +110,22 @@ impl HostResult {
             let short = h.split('.').next().unwrap_or(h);
             (!short.is_empty()).then(|| short.to_string())
         })
+    }
+
+    /// Domain, else NetBIOS workgroup, else the DNS suffix of the hostname
+    /// (`pc42.corp.example` → `corp.example`).
+    pub fn domain_text(&self) -> Option<String> {
+        self.domain.clone().or_else(|| self.workgroup.clone()).or_else(|| {
+            let h = self.hostname.as_deref()?;
+            let (_, suffix) = h.split_once('.')?;
+            let generic = ["local", "lan", "home", "localdomain", "home.arpa", "internal"];
+            (!generic.contains(&suffix.to_lowercase().as_str())).then(|| suffix.to_string())
+        })
+    }
+
+    /// Exact OS from WMI when known, else the fingerprinted OS family.
+    pub fn os_text(&self) -> Option<String> {
+        self.os_name.clone().or_else(|| self.device.as_ref()?.os.map(str::to_string))
     }
 
     pub fn device_text(&self) -> String {
@@ -220,7 +247,19 @@ fn scan_host(ip: Ipv4Addr, cfg: &ScanConfig, arp: &ArpCache) -> HostResult {
         if r.hostname.is_none() {
             r.hostname = dns_lookup::get_hostname().ok();
         }
-    } else if cfg.remote_sessions && (r.open_ports.contains(&445) || r.netbios_name.is_some()) {
+    } else if cfg.admin_queries && looks_windows(&r) {
+        if let Some(w) = wmi::query(ip, Duration::from_secs(20)) {
+            if r.mac.is_none() {
+                r.mac = w.mac; // the only MAC source for hosts on other VLANs
+            }
+            if r.netbios_name.is_none() {
+                r.netbios_name = w.computer;
+            }
+            r.domain = w.domain;
+            r.os_name = w.os;
+            r.model = w.model;
+            merge_users(&mut r.users, w.user.into_iter().collect());
+        }
         merge_users(&mut r.users, netbios::remote_sessions(ip));
     }
 
@@ -247,10 +286,33 @@ fn reverse_dns(ip: Ipv4Addr, timeout: Duration) -> Option<String> {
         .map(|h| h.trim_end_matches('.').to_string())
 }
 
+/// Worth spending an admin query on: RPC/SMB/RDP open, or answers NetBIOS.
+fn looks_windows(r: &HostResult) -> bool {
+    [135, 139, 445, 3389].iter().any(|p| r.open_ports.contains(p)) || r.netbios_name.is_some()
+}
+
 fn merge_users(into: &mut Vec<String>, more: Vec<String>) {
     for u in more {
         if !into.iter().any(|x| x.eq_ignore_ascii_case(&u)) {
             into.push(u);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_from_dns_suffix() {
+        let mut r = HostResult::new(Ipv4Addr::new(10, 0, 0, 5));
+        r.hostname = Some("pc42.corp.example".into());
+        assert_eq!(r.domain_text().as_deref(), Some("corp.example"));
+        r.hostname = Some("iphone.local".into());
+        assert_eq!(r.domain_text(), None);
+        r.hostname = Some("printer".into());
+        assert_eq!(r.domain_text(), None);
+        r.domain = Some("ad.example".into());
+        assert_eq!(r.domain_text().as_deref(), Some("ad.example"));
     }
 }

@@ -78,8 +78,10 @@ HappyIP isn't code-signed with a paid certificate yet, so your OS will warn you 
 |---|---|
 | **Alive** | System `ping` (no admin rights needed), then TCP connects to common ports, then the OS ARP table, then a NetBIOS query. "Seen via" shows which one answered. |
 | **Computer name** | NetBIOS name if the device answers on UDP 137, otherwise its reverse-DNS name. |
-| **Logged-in users** | Names registered under the NetBIOS `<03>` suffix; `who` / `query user` for your own computer; `query user /server:<ip>` on Windows if **Query sessions** is enabled. |
-| **MAC address** | The OS ARP table (devices on your subnet), or the MAC inside a Windows machine's NetBIOS reply (works across subnets). |
+| **Logged-in users** | Names registered under the NetBIOS `<03>` suffix; `who` / `query user` for your own computer; with **Admin queries** (Windows): the console user from WMI plus `query user /server:<ip>` sessions. |
+| **MAC address** | The OS ARP table (devices on your own subnet/VLAN), the MAC inside a Windows machine's NetBIOS reply, or with **Admin queries** the Windows PC's own adapter list over WMI (works across VLANs). |
+| **Domain** | WMI (with **Admin queries**), else the NetBIOS domain/workgroup, else the DNS suffix of the hostname (`pc42.corp.example` → `corp.example`), which works for normal users and across VLANs. |
+| **OS / model** | With **Admin queries**: the exact Windows edition and hardware model (e.g. *Windows 11 Pro · Dell Inc. OptiPlex 7090*) from WMI. |
 | **Vendor** | MAC prefix looked up in the built-in IEEE OUI registry. Randomized "private" MACs (phones) are flagged. |
 | **Device type** | Combines vendor, TTL (128 = Windows, 64 = Linux/Apple/Android, 255 = embedded), open ports (e.g. 9100 printer, 62078 iPhone, 554 camera, 8009 Chromecast, 548 Mac), hostname patterns, the HTTP page title / `Server` header, and whether it's your default gateway. |
 
@@ -96,7 +98,9 @@ On Windows, `--cli` output is only visible from a debug build or when redirected
 
 ## Good to know
 
-- **Logged-in users on other PCs** are only visible in some cases. Modern Windows rarely advertises the user over NetBIOS. The reliable way is **Query sessions** (Windows only), which needs an account with admin rights on the targets (e.g. a domain admin). Phones, Macs and IoT devices don't expose users at all.
+- **Admin queries (Windows):** run HappyIP as a domain admin (or *Run as different user* with an account that is admin on the targets). The PCs must allow remote WMI (the *Windows Management Instrumentation* firewall rules, typically enabled by Group Policy in managed domains). Without admin rights you still get names, domains (from DNS) and device types, but not logged-in users.
+- **MAC addresses across VLANs:** ARP only sees your own VLAN, and Windows Firewall answers NetBIOS only from the local subnet by default. For Windows PCs on other VLANs, enable **Admin queries**. Non-Windows devices (printers, phones, cameras) on other VLANs don't expose their MAC remotely; only the router/switch knows it.
+- **Logged-in users on other PCs** need **Admin queries**. Modern Windows rarely advertises the user over NetBIOS. Phones, Macs and IoT devices don't expose users at all.
 - **MAC addresses on macOS:** recent macOS versions may hide hardware addresses from apps (the ARP table comes back empty). The MAC and Vendor columns can then be blank on Mac. Windows is unaffected.
 - **Device types are best-effort guesses.** The report's *Identified by* column shows the clues behind each one.
 - **Only scan networks you own or are authorized to scan.**

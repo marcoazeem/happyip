@@ -33,7 +33,8 @@ pub fn html(meta: &ReportMeta, hosts: &[&HostResult]) -> String {
         let dev = h.device.as_ref();
         let kind = dev.map_or("Unknown", |d| d.kind);
         let icon = dev.map_or("❔", |d| d.icon());
-        let os = dev.and_then(|d| d.os).unwrap_or("");
+        let os = h.os_text().unwrap_or_default();
+        let os = [Some(os), h.model.clone()].into_iter().flatten().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
         let name = h.display_name().unwrap_or_default();
         let fqdn = h.hostname.as_deref().filter(|f| !f.eq_ignore_ascii_case(&name)).unwrap_or("");
         let users = if h.users.is_empty() {
@@ -56,11 +57,11 @@ pub fn html(meta: &ReportMeta, hosts: &[&HostResult]) -> String {
 </tr>\n",
             n = i + 1,
             kind_e = esc(kind),
-            os_html = if os.is_empty() { String::new() } else { format!("<small>{}</small>", esc(os)) },
+            os_html = if os.is_empty() { String::new() } else { format!("<small>{}</small>", esc(&os)) },
             name_e = esc(&name),
             name_html = if name.is_empty() { "<span class=muted>—</span>".into() } else { format!("<b>{}</b>", esc(&name)) },
             fqdn_html = if fqdn.is_empty() { String::new() } else { format!("<small>{}</small>", esc(fqdn)) },
-            wg_html = h.workgroup.as_deref().map(|w| format!("<small>Workgroup: {}</small>", esc(w))).unwrap_or_default(),
+            wg_html = h.domain_text().map(|w| format!("<small>Domain: {}</small>", esc(&w))).unwrap_or_default(),
             users_sort = esc(&h.users.join(", ")),
             ip_sort = u32::from(h.ip),
             ip = h.ip,

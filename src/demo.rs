@@ -52,7 +52,15 @@ pub fn results() -> Vec<HostResult> {
             r.rtt_ms = Some(s.rtt_ms);
             r.hostname = some(s.hostname);
             r.netbios_name = some(s.netbios);
-            r.workgroup = r.netbios_name.as_ref().map(|_| "CORP".to_string());
+            if r.netbios_name.is_some() {
+                r.domain = Some("corp.example".into());
+                (r.os_name, r.model) = match s.last_octet {
+                    5 => (Some("Windows Server 2022 Standard".into()), Some("Dell Inc. PowerEdge R650".into())),
+                    12 | 15 => (Some("Windows 11 Pro".into()), Some("Dell Inc. OptiPlex 7090".into())),
+                    14 | 21 => (Some("Windows 11 Enterprise".into()), Some("LENOVO ThinkPad T14 Gen 4".into())),
+                    _ => (None, None),
+                };
+            }
             r.users = s.users.iter().map(|u| u.to_string()).collect();
             r.mac = some(s.mac);
             r.vendor = r.mac.as_deref().and_then(identify::vendor);

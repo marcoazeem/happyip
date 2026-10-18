@@ -181,6 +181,10 @@ pub fn classify(r: &HostResult, gateway: Option<Ipv4Addr>, is_local: bool) -> De
     }
 
     let windows_ports = port(135) || port(139) || port(445) || port(3389);
+    let wmi_os = r.os_name.as_deref().unwrap_or("").to_lowercase();
+    if let Some(m) = &r.model {
+        basis.push(format!("model {m}"));
+    }
     let pick = |kind: &'static str, os: Option<&'static str>| (kind, os);
 
     let (kind, os) = if is_local {
@@ -215,7 +219,8 @@ pub fn classify(r: &HostResult, gateway: Option<Ipv4Addr>, is_local: bool) -> De
     } else if vendor.contains("apple") {
         pick("Apple device", Some("Apple OS"))
     } else if windows_ports || r.netbios_name.is_some() && ttl == Some(128) {
-        let server = port(3389) && (any(&name, &["srv", "server", "dc0", "dc1", "-dc", "sql", "exch", "file"]) || port(53) || port(88));
+        let server = wmi_os.contains("server")
+            || wmi_os.is_empty() && port(3389) && (any(&name, &["srv", "server", "dc0", "dc1", "-dc", "sql", "exch", "file"]) || port(53) || port(88));
         if server {
             pick("Windows server", Some("Windows Server"))
         } else if any(&name, &["desktop-", "laptop-", "pc-", "-pc", "win"]) || port(445) || port(3389) {

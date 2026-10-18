@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 
 /// Run a command without flashing a console window on Windows.
 pub fn run_hidden(program: &str, args: &[&str]) -> Option<Output> {
+    hidden_command(program, args).output().ok()
+}
+
+fn hidden_command(program: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(program);
     cmd.args(args);
     #[cfg(windows)]
@@ -17,7 +21,42 @@ pub fn run_hidden(program: &str, args: &[&str]) -> Option<Output> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.output().ok()
+    cmd
+}
+
+/// Like [`run_hidden`], but kills the process if it runs past `timeout`
+/// (remote management calls can hang for a long time on unreachable hosts).
+/// Returns stdout only when the process exited successfully in time.
+pub fn run_hidden_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = hidden_command(program, args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // Drain stdout on a thread so a chatty process can't block on a full pipe.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let out = reader.join().ok()?;
+    status.filter(|s| s.success()).map(|_| String::from_utf8_lossy(&out).into_owned())
 }
 
 #[derive(Clone, Copy, Debug)]
