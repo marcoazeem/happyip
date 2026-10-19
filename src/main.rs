@@ -265,6 +265,12 @@ impl App {
                     }
                     self.admin_done += 1;
                 }
+                ScanEvent::NotAlive(ips) => {
+                    for r in self.results.iter_mut().filter(|r| ips.contains(&r.ip)) {
+                        r.alive = None;
+                        r.firewall_reply = true;
+                    }
+                }
                 ScanEvent::HostsDone { admin_pending } => {
                     self.hosts_done_in = Some(self.elapsed_now());
                     self.admin_total = self.admin_done + admin_pending;
@@ -360,7 +366,7 @@ impl App {
                 r.ttl.map(|t| t.to_string()).unwrap_or_default(),
                 r.ports_text(),
                 r.http_banner.clone().unwrap_or_default(),
-                r.alive.map(|a| a.label().to_string()).unwrap_or_default(),
+                r.seen_via().to_string(),
             ];
             let line: Vec<String> = fields.iter().map(|f| csv_escape(f)).collect();
             out.push_str(&line.join(","));
@@ -616,7 +622,7 @@ impl App {
                         ui.label(r.ports_text());
                     });
                     row.col(|ui| {
-                        ui.label(RichText::new(r.alive.map(|a| a.label()).unwrap_or("")).weak());
+                        ui.label(RichText::new(r.seen_via()).weak());
                     });
 
                     let resp = row.response();
@@ -733,6 +739,13 @@ fn run_cli(range: String, report_path: Option<std::path::PathBuf>) {
             ScanEvent::Update(h) => {
                 if let Some(row) = all.iter_mut().find(|r| r.ip == h.ip) {
                     *row = h;
+                }
+            }
+            ScanEvent::NotAlive(ips) => {
+                eprintln!("Ignoring {} addresses answered only by a firewall/proxy", ips.len());
+                for r in all.iter_mut().filter(|r| ips.contains(&r.ip)) {
+                    r.alive = None;
+                    r.firewall_reply = true;
                 }
             }
             ScanEvent::HostsDone { admin_pending } => {

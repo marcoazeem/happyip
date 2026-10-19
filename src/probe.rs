@@ -87,7 +87,10 @@ pub fn ping(ip: Ipv4Addr, timeout_ms: u64) -> Option<PingReply> {
     let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
     // Windows exits 0 for "destination host unreachable" replies from the
     // gateway, so require a TTL in the output rather than trusting the code.
-    let ttl = number_after(&text, "ttl=").map(|v| v as u32);
+    // The reply must also come from the address we pinged: routers and
+    // firewalls can answer on its behalf ("Reply from 10.0.0.1: ...").
+    let text = reply_line(&text, ip)?;
+    let ttl = number_after(text, "ttl=").map(|v| v as u32);
     if ttl.is_none() {
         return None;
     }
@@ -97,6 +100,22 @@ pub fn ping(ip: Ipv4Addr, timeout_ms: u64) -> Option<PingReply> {
         number_after(&text, "time=").unwrap_or(0.0)
     };
     Some(PingReply { rtt_ms, ttl })
+}
+
+/// The line of `ping` output that is a reply from `ip` itself, e.g.
+/// `reply from 10.0.0.5: bytes=32 time<1ms ttl=128` (Windows; French puts a
+/// space before the colon) or `64 bytes from 10.0.0.5: icmp_seq=0 ttl=64`.
+fn reply_line(text: &str, ip: Ipv4Addr) -> Option<&str> {
+    let ip = ip.to_string();
+    text.lines().find(|l| {
+        l.contains("ttl=")
+            && l.match_indices(&ip).any(|(i, _)| {
+                let before = l[..i].chars().next_back();
+                let after = l[i + ip.len()..].trim_start_matches(' ');
+                // The whole address (10.0.0.5, not part of 10.0.0.15), then ':'.
+                !before.is_some_and(|c| c.is_ascii_digit() || c == '.') && after.starts_with(':')
+            })
+    })
 }
 
 fn number_after(text: &str, key: &str) -> Option<f64> {
@@ -229,6 +248,19 @@ pub fn format_mac(b: &[u8; 6]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ping_reply_must_come_from_target() {
+        let ip: Ipv4Addr = "10.0.0.5".parse().unwrap();
+        let ok = |t: &str| reply_line(t, ip).is_some();
+        assert!(ok("reply from 10.0.0.5: bytes=32 time<1ms ttl=128"));
+        assert!(ok("réponse de 10.0.0.5 : octets=32 temps<1ms ttl=128"));
+        assert!(ok("64 bytes from 10.0.0.5: icmp_seq=0 ttl=64 time=1.2 ms"));
+        assert!(!ok("reply from 10.0.0.1: bytes=32 time=1ms ttl=255"));
+        assert!(!ok("reply from 10.0.0.55: bytes=32 time=1ms ttl=128"));
+        assert!(!ok("reply from 110.0.0.5: bytes=32 time=1ms ttl=128"));
+        assert!(!ok("reply from 10.0.0.1: destination host unreachable."));
+    }
 
     #[test]
     fn arp_formats() {

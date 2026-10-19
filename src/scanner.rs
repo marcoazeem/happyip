@@ -70,6 +70,9 @@ pub struct HostResult {
     pub os_name: Option<String>,
     /// Hardware manufacturer + model from WMI, e.g. "Dell Inc. OptiPlex 7090".
     pub model: Option<String>,
+    /// Only a firewall/proxy answered for this address (see [`firewall_echoes`]),
+    /// so it's treated as not alive.
+    pub firewall_reply: bool,
 }
 
 impl HostResult {
@@ -91,6 +94,7 @@ impl HostResult {
             domain: None,
             os_name: None,
             model: None,
+            firewall_reply: false,
         }
     }
 
@@ -132,6 +136,15 @@ impl HostResult {
         self.device.as_ref().map(|d| d.kind.to_string()).unwrap_or_default()
     }
 
+    /// "Seen via" column text.
+    pub fn seen_via(&self) -> &'static str {
+        match self.alive {
+            Some(a) => a.label(),
+            None if self.firewall_reply => "Firewall reply",
+            None => "",
+        }
+    }
+
     pub fn ports_text(&self) -> String {
         self.open_ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
     }
@@ -141,6 +154,9 @@ pub enum ScanEvent {
     Host(HostResult),
     /// A host already sent as `Host`, with admin (WMI) details filled in.
     Update(HostResult),
+    /// These addresses only "answered" through a firewall or proxy replying
+    /// on behalf of every address, so they're not alive after all.
+    NotAlive(Vec<Ipv4Addr>),
     /// Every address has been scanned. `admin_pending` hosts are still
     /// waiting for admin details, which arrive as `Update`s.
     HostsDone { admin_pending: usize },
@@ -187,11 +203,14 @@ pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> Scan
         let admin_done = AtomicUsize::new(0);
         let scanners = cfg.threads.clamp(1, 512).min(cfg.targets.len());
         let scanners_left = AtomicUsize::new(scanners);
+        // Hosts seen only through TCP, checked for firewall echoes at the end.
+        let tcp_only = std::sync::Mutex::new(Vec::<(Ipv4Addr, Vec<u16>)>::new());
 
         std::thread::scope(|s| {
             for _ in 0..scanners {
                 let (cfg, tx, next, arp, admin_tx) = (&cfg, tx.clone(), &next, &arp, admin_tx.clone());
-                let (admin_queued, admin_done, scanners_left) = (&admin_queued, &admin_done, &scanners_left);
+                let (admin_queued, admin_done, scanners_left, tcp_only) =
+                    (&admin_queued, &admin_done, &scanners_left, &tcp_only);
                 s.spawn(move || {
                     loop {
                         if cancel.load(Ordering::Relaxed) {
@@ -200,6 +219,9 @@ pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> Scan
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&ip) = cfg.targets.get(i) else { break };
                         let result = scan_host(ip, cfg, arp);
+                        if is_tcp_only(&result) {
+                            tcp_only.lock().unwrap().push((ip, result.open_ports.clone()));
+                        }
                         if wants_admin_details(&result, cfg) {
                             admin_queued.fetch_add(1, Ordering::Relaxed);
                             let _ = admin_tx.send(result.clone());
@@ -211,6 +233,10 @@ pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> Scan
                     }
                     // The last scanner out reports that the host scan is done.
                     if scanners_left.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        let echoes = firewall_echoes(&tcp_only.lock().unwrap(), cfg.targets.len());
+                        if !echoes.is_empty() {
+                            let _ = tx.send(ScanEvent::NotAlive(echoes));
+                        }
                         let pending = admin_queued.load(Ordering::Relaxed)
                             .saturating_sub(admin_done.load(Ordering::Relaxed));
                         let _ = tx.send(ScanEvent::HostsDone { admin_pending: pending });
@@ -245,10 +271,35 @@ pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> Scan
     ScanHandle { rx, cancel }
 }
 
+/// Seen only via TCP: no ping reply, no ARP/MAC, no NetBIOS.
+fn is_tcp_only(r: &HostResult) -> bool {
+    r.alive == Some(AliveBy::Tcp) && r.mac.is_none() && r.netbios_name.is_none()
+}
+
+/// Spots a firewall or web proxy answering for addresses where nothing lives.
+///
+/// Some firewalls between VLANs reply "connection refused" for every address
+/// they block, and transparent web proxies accept port 80/443 for any address.
+/// Either makes empty addresses look alive. The tell is a large group of
+/// TCP-only "hosts" with exactly the same answer that a real device wouldn't
+/// give: all ports refused, or only web ports open. Such a group is reported
+/// when it's at least 8 addresses and a quarter of the range.
+pub fn firewall_echoes(tcp_only: &[(Ipv4Addr, Vec<u16>)], targets: usize) -> Vec<Ipv4Addr> {
+    let web_only = |ports: &Vec<u16>| ports.iter().all(|p| [80, 443, 8080].contains(p));
+    let mut groups: HashMap<&Vec<u16>, Vec<Ipv4Addr>> = HashMap::new();
+    for (ip, ports) in tcp_only.iter().filter(|(_, p)| web_only(p)) {
+        groups.entry(ports).or_default().push(*ip);
+    }
+    let min = 8.max(targets / 4);
+    let mut out: Vec<Ipv4Addr> = groups.into_values().filter(|g| g.len() >= min).flatten().collect();
+    out.sort();
+    out
+}
+
 /// Only Windows PCs with the RPC port (135) open can answer WMI; anything
 /// else would just sit until the timeout.
 fn wants_admin_details(r: &HostResult, cfg: &ScanConfig) -> bool {
-    cfg.admin_queries && r.alive.is_some() && r.alive != Some(AliveBy::Local) && r.open_ports.contains(&135)
+    cfg.admin_queries && r.alive.is_some() && !is_tcp_only(r) && r.alive != Some(AliveBy::Local) && r.open_ports.contains(&135)
 }
 
 fn add_admin_details(r: &mut HostResult, cfg: &ScanConfig) {
@@ -365,6 +416,23 @@ fn merge_users(into: &mut Vec<String>, more: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spots_firewall_echoes() {
+        let ip = |n: u8| Ipv4Addr::new(10, 9, 0, n);
+        // A firewall refusing everything for 100 empty addresses, plus a few
+        // real ping-blocking hosts.
+        let mut seen: Vec<(Ipv4Addr, Vec<u16>)> = (1..=100).map(|n| (ip(n), vec![])).collect();
+        seen.push((ip(200), vec![22]));
+        seen.push((ip(201), vec![135, 445]));
+        seen.push((ip(202), vec![443]));
+        let echoes = firewall_echoes(&seen, 254);
+        assert_eq!(echoes.len(), 100);
+        assert!(!echoes.contains(&ip(200)) && !echoes.contains(&ip(202)));
+
+        // A handful of TCP-only hosts is normal, not a firewall.
+        assert!(firewall_echoes(&seen[95..], 254).is_empty());
+    }
 
     #[test]
     fn domain_from_dns_suffix() {
