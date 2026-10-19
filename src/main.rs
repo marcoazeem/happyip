@@ -601,6 +601,17 @@ impl App {
                         copy("Copy hostname", r.hostname.clone().unwrap_or_default());
                         copy("Copy users", r.users.join(", "));
                         copy("Copy row", row_text_display(r));
+                        ui.separator();
+                        let target = rdp_target(r);
+                        let hint = if r.open_ports.contains(&3389) {
+                            format!("Connect to {target}")
+                        } else {
+                            format!("Connect to {target} (port 3389 wasn't seen open)")
+                        };
+                        if ui.button("Remote Desktop…").on_hover_text(hint).clicked() {
+                            open_remote_desktop(&target);
+                            ui.close();
+                        }
                     });
                 });
             });
@@ -768,4 +779,26 @@ fn cmp_str(a: &Option<String>, b: &Option<String>) -> Ordering {
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
+}
+
+/// Name to give Remote Desktop: a DNS name lets Windows use Kerberos (domain
+/// sign-in without warnings); fall back to the NetBIOS name, then the IP.
+fn rdp_target(r: &HostResult) -> String {
+    r.hostname
+        .clone()
+        .or_else(|| r.netbios_name.clone())
+        .unwrap_or_else(|| r.ip.to_string())
+}
+
+/// Opens the system Remote Desktop client: `mstsc` on Windows, or the
+/// Microsoft "Windows App" (rdp:// link) on macOS.
+fn open_remote_desktop(target: &str) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("mstsc").arg(format!("/v:{target}")).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open")
+        .arg(format!("rdp://full%20address=s:{target}"))
+        .spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = target;
 }

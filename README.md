@@ -57,7 +57,7 @@ HappyIP isn't code-signed with a paid certificate yet, so your OS will warn you 
 - **Reports:** one click exports a polished, searchable, sortable **HTML report** that opens in your browser and prints to PDF. CSV export is also available.
 - **Works on old servers and VMs:** uses the GPU when available and automatically falls back to CPU rendering on machines without one (Windows Server 2012, Remote Desktop, VMs).
 - **Flexible ranges:** `192.168.1.0/24`, `10.0.0.1-50`, `10.0.0.1 - 10.0.3.254`, or several separated by commas. It auto-detects your network.
-- Sort by any column, filter as you type, right-click a row to copy IP / MAC / hostname / users.
+- Sort by any column, filter as you type, right-click a row to copy IP / MAC / hostname / users, or **Remote Desktop** straight into it (`mstsc` on Windows; the Microsoft *Windows App* on Mac).
 
 ## Network report
 
@@ -102,6 +102,7 @@ On Windows, `--cli` output is only visible from a debug build or when redirected
 - **MAC addresses across VLANs:** ARP only sees your own VLAN, and Windows Firewall answers NetBIOS only from the local subnet by default. For Windows PCs on other VLANs, enable **Admin queries**. Non-Windows devices (printers, phones, cameras) on other VLANs don't expose their MAC remotely; only the router/switch knows it.
 - **Logged-in users on other PCs** need **Admin queries**. Modern Windows rarely advertises the user over NetBIOS. Phones, Macs and IoT devices don't expose users at all.
 - **MAC addresses on macOS:** recent macOS versions may hide hardware addresses from apps (the ARP table comes back empty). The MAC and Vendor columns can then be blank on Mac. Windows is unaffected.
+- **Remote Desktop** connects by DNS name when one is known, so domain accounts sign in with Kerberos (no certificate warning on domain PCs). Your account needs RDP access on the target (e.g. member of *Remote Desktop Users* or a local admin).
 - **Device types are best-effort guesses.** The report's *Identified by* column shows the clues behind each one.
 - **Only scan networks you own or are authorized to scan.**
 
