@@ -4,7 +4,6 @@
 //! the console user, domain, exact OS and hardware model.
 
 use std::net::Ipv4Addr;
-use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -17,26 +16,11 @@ pub struct WmiInfo {
     pub mac: Option<String>,
 }
 
-/// Each query starts a PowerShell process, so cap how many run at once.
-static SLOTS: Mutex<usize> = Mutex::new(0);
-static FREED: Condvar = Condvar::new();
-const MAX_CONCURRENT: usize = 8;
-
 pub fn query(ip: Ipv4Addr, timeout: Duration) -> Option<WmiInfo> {
     if !cfg!(windows) {
         return None;
     }
-    {
-        let mut used = SLOTS.lock().unwrap();
-        while *used >= MAX_CONCURRENT {
-            used = FREED.wait(used).unwrap();
-        }
-        *used += 1;
-    }
-    let out = run(ip, timeout);
-    *SLOTS.lock().unwrap() -= 1;
-    FREED.notify_one();
-    out.map(|text| parse(&text, ip))
+    run(ip, timeout).map(|text| parse(&text, ip))
 }
 
 fn run(ip: Ipv4Addr, timeout: Duration) -> Option<String> {

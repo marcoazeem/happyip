@@ -143,6 +143,10 @@ struct App {
     sort: (SortKey, bool),
     selected_row: Option<std::net::Ipv4Addr>,
     scanned_range: String,
+    /// Seconds until every address was scanned (admin details may follow).
+    hosts_done_in: Option<f32>,
+    admin_total: usize,
+    admin_done: usize,
 }
 
 impl App {
@@ -173,6 +177,9 @@ impl App {
             status: "Ready".into(),
             sort: (SortKey::Ip, true),
             selected_row: None,
+            hosts_done_in: None,
+            admin_total: 0,
+            admin_done: 0,
             scanned_range: String::new(),
         };
         if demo_mode() {
@@ -238,6 +245,9 @@ impl App {
         self.results.reserve(self.total);
         self.selected_row = None;
         self.started = Some(Instant::now());
+        self.hosts_done_in = None;
+        self.admin_total = 0;
+        self.admin_done = 0;
         self.status = format!("Scanning {} hosts…", self.total);
         let ctx = self.ctx.clone();
         self.scan = Some(scanner::start(cfg, move || ctx.request_repaint()));
@@ -249,22 +259,46 @@ impl App {
         while let Ok(ev) = scan.rx.try_recv() {
             match ev {
                 ScanEvent::Host(h) => self.results.push(h),
+                ScanEvent::Update(h) => {
+                    if let Some(row) = self.results.iter_mut().find(|r| r.ip == h.ip) {
+                        *row = h;
+                    }
+                    self.admin_done += 1;
+                }
+                ScanEvent::HostsDone { admin_pending } => {
+                    self.hosts_done_in = Some(self.elapsed_now());
+                    self.admin_total = self.admin_done + admin_pending;
+                }
                 ScanEvent::Finished => finished = true,
             }
         }
-        if let Some(t) = self.started {
-            self.elapsed = t.elapsed().as_secs_f32();
-        }
+        self.elapsed = self.elapsed_now();
+        let alive = self.alive_count();
         if finished {
             self.scan = None;
-            let alive = self.alive_count();
             let stopped = if self.results.len() < self.total { " (stopped)" } else { "" };
+            let hosts_in = self.hosts_done_in.unwrap_or(self.elapsed);
+            let admin = if self.admin_total > 0 {
+                format!(", admin details for {} Windows PCs after {:.1}s", self.admin_total, self.elapsed)
+            } else {
+                String::new()
+            };
             self.status = format!(
-                "Done{stopped}: {} scanned, {alive} alive in {:.1}s",
+                "Done{stopped}: {} scanned, {alive} alive in {hosts_in:.1}s{admin}",
                 self.results.len(),
-                self.elapsed
+            );
+        } else if let Some(hosts_in) = self.hosts_done_in {
+            self.status = format!(
+                "Scanned {} hosts, {alive} alive in {hosts_in:.1}s. Getting admin details from Windows PCs: {}/{}…",
+                self.results.len(),
+                self.admin_done,
+                self.admin_total
             );
         }
+    }
+
+    fn elapsed_now(&self) -> f32 {
+        self.started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(self.elapsed)
     }
 
     fn alive_count(&self) -> usize {
@@ -692,14 +726,24 @@ fn run_cli(range: String, report_path: Option<std::path::PathBuf>) {
     };
     let started = Instant::now();
     let scan = scanner::start(cfg, || {});
-    let all: Vec<HostResult> = scan
-        .rx
-        .iter()
-        .map_while(|ev| match ev {
-            ScanEvent::Host(h) => Some(h),
-            ScanEvent::Finished => None,
-        })
-        .collect();
+    let mut all: Vec<HostResult> = Vec::new();
+    for ev in scan.rx.iter() {
+        match ev {
+            ScanEvent::Host(h) => all.push(h),
+            ScanEvent::Update(h) => {
+                if let Some(row) = all.iter_mut().find(|r| r.ip == h.ip) {
+                    *row = h;
+                }
+            }
+            ScanEvent::HostsDone { admin_pending } => {
+                eprintln!("Hosts scanned in {:.1}s", started.elapsed().as_secs_f32());
+                if admin_pending > 0 {
+                    eprintln!("Getting admin details from {admin_pending} Windows PCs…");
+                }
+            }
+            ScanEvent::Finished => break,
+        }
+    }
     let scanned = all.len();
     let mut alive: Vec<HostResult> = all.into_iter().filter(|h| h.alive.is_some()).collect();
     alive.sort_by_key(|h| h.ip);

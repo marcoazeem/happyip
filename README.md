@@ -98,7 +98,7 @@ On Windows, `--cli` output is only visible from a debug build or when redirected
 
 ## Good to know
 
-- **Admin queries (Windows):** run HappyIP as a domain admin (or *Run as different user* with an account that is admin on the targets). The PCs must allow remote WMI (the *Windows Management Instrumentation* firewall rules, typically enabled by Group Policy in managed domains). Without admin rights you still get names, domains (from DNS) and device types, but not logged-in users.
+- **Admin queries (Windows):** the scan itself runs at full speed; admin details (MAC, users, domain, OS, model) are then collected in parallel from Windows PCs with RPC port 135 open and fill in as they arrive. Run HappyIP as a domain admin (or *Run as different user* with an account that is admin on the targets). The PCs must allow remote WMI (the *Windows Management Instrumentation* firewall rules, typically enabled by Group Policy in managed domains). Without admin rights you still get names, domains (from DNS) and device types, but not logged-in users.
 - **MAC addresses across VLANs:** ARP only sees your own VLAN, and Windows Firewall answers NetBIOS only from the local subnet by default. For Windows PCs on other VLANs, enable **Admin queries**. Non-Windows devices (printers, phones, cameras) on other VLANs don't expose their MAC remotely; only the router/switch knows it.
 - **Logged-in users on other PCs** need **Admin queries**. Modern Windows rarely advertises the user over NetBIOS. Phones, Macs and IoT devices don't expose users at all.
 - **MAC addresses on macOS:** recent macOS versions may hide hardware addresses from apps (the ARP table comes back empty). The MAC and Vendor columns can then be blank on Mac. Windows is unaffected.

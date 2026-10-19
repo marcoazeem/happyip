@@ -145,10 +145,10 @@ pub fn remote_sessions(ip: Ipv4Addr) -> Vec<String> {
 fn query_user_output(extra: &[&str]) -> Vec<String> {
     let mut args = vec!["user"];
     args.extend_from_slice(extra);
-    let Some(out) = crate::probe::run_hidden("query", &args) else {
+    let Some(out) = crate::probe::run_hidden_timeout("query", &args, std::time::Duration::from_secs(5)) else {
         return Vec::new();
     };
-    let mut users: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    let mut users: Vec<String> = out
         .lines()
         .skip(1) // header row
         .filter_map(|l| l.trim_start_matches('>').split_whitespace().next().map(str::to_string))

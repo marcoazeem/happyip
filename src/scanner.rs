@@ -139,6 +139,11 @@ impl HostResult {
 
 pub enum ScanEvent {
     Host(HostResult),
+    /// A host already sent as `Host`, with admin (WMI) details filled in.
+    Update(HostResult),
+    /// Every address has been scanned. `admin_pending` hosts are still
+    /// waiting for admin details, which arrive as `Update`s.
+    HostsDone { admin_pending: usize },
     Finished,
 }
 
@@ -153,8 +158,18 @@ impl ScanHandle {
     }
 }
 
+/// How long one admin (WMI) lookup may take. Reachable PCs answer in a
+/// second or two; firewalled ones would otherwise hang for 20 s or more.
+const ADMIN_TIMEOUT: Duration = Duration::from_secs(8);
+/// Admin lookups running at once (each one is a PowerShell process).
+const ADMIN_WORKERS: usize = 16;
+
 /// Start a scan in the background. `notify` is called after each result so
 /// the UI can repaint.
+///
+/// The host scan never waits on admin lookups: hosts are reported as soon as
+/// they are scanned, and Windows PCs are handed to a separate pool that sends
+/// their WMI details as `Update`s, overlapping with the rest of the scan.
 pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> ScanHandle {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -165,21 +180,62 @@ pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> Scan
         let next = AtomicUsize::new(0);
         let arp = ArpCache::new();
         let notify = &notify;
+        let cancel = &*cancel2;
+        let (admin_tx, admin_rx) = mpsc::channel::<HostResult>();
+        let admin_rx = std::sync::Mutex::new(admin_rx);
+        let admin_queued = AtomicUsize::new(0);
+        let admin_done = AtomicUsize::new(0);
+        let scanners = cfg.threads.clamp(1, 512).min(cfg.targets.len());
+        let scanners_left = AtomicUsize::new(scanners);
+
         std::thread::scope(|s| {
-            for _ in 0..cfg.threads.clamp(1, 512).min(cfg.targets.len()) {
-                let (cfg, tx, next, arp, cancel) = (&cfg, tx.clone(), &next, &arp, &cancel2);
-                s.spawn(move || loop {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
+            for _ in 0..scanners {
+                let (cfg, tx, next, arp, admin_tx) = (&cfg, tx.clone(), &next, &arp, admin_tx.clone());
+                let (admin_queued, admin_done, scanners_left) = (&admin_queued, &admin_done, &scanners_left);
+                s.spawn(move || {
+                    loop {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&ip) = cfg.targets.get(i) else { break };
+                        let result = scan_host(ip, cfg, arp);
+                        if wants_admin_details(&result, cfg) {
+                            admin_queued.fetch_add(1, Ordering::Relaxed);
+                            let _ = admin_tx.send(result.clone());
+                        }
+                        if tx.send(ScanEvent::Host(result)).is_err() {
+                            break;
+                        }
+                        notify();
                     }
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&ip) = cfg.targets.get(i) else { break };
-                    let result = scan_host(ip, cfg, arp);
-                    if tx.send(ScanEvent::Host(result)).is_err() {
-                        break;
+                    // The last scanner out reports that the host scan is done.
+                    if scanners_left.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        let pending = admin_queued.load(Ordering::Relaxed)
+                            .saturating_sub(admin_done.load(Ordering::Relaxed));
+                        let _ = tx.send(ScanEvent::HostsDone { admin_pending: pending });
+                        notify();
                     }
-                    notify();
                 });
+            }
+            drop(admin_tx); // admin workers stop once every scanner has finished
+
+            if cfg.admin_queries {
+                for _ in 0..ADMIN_WORKERS {
+                    let (cfg, tx, admin_rx, admin_done) = (&cfg, tx.clone(), &admin_rx, &admin_done);
+                    s.spawn(move || loop {
+                        let next = admin_rx.lock().unwrap().recv();
+                        let Ok(mut r) = next else { break };
+                        if !cancel.load(Ordering::Relaxed) {
+                            add_admin_details(&mut r, cfg);
+                        }
+                        admin_done.fetch_add(1, Ordering::Relaxed);
+                        if tx.send(ScanEvent::Update(r)).is_err() {
+                            break;
+                        }
+                        notify();
+                    });
+                }
             }
         });
         let _: Result<(), _> = tx.send(ScanEvent::Finished);
@@ -187,6 +243,31 @@ pub fn start(cfg: ScanConfig, notify: impl Fn() + Send + Sync + 'static) -> Scan
     });
 
     ScanHandle { rx, cancel }
+}
+
+/// Only Windows PCs with the RPC port (135) open can answer WMI; anything
+/// else would just sit until the timeout.
+fn wants_admin_details(r: &HostResult, cfg: &ScanConfig) -> bool {
+    cfg.admin_queries && r.alive.is_some() && r.alive != Some(AliveBy::Local) && r.open_ports.contains(&135)
+}
+
+fn add_admin_details(r: &mut HostResult, cfg: &ScanConfig) {
+    let Some(w) = wmi::query(r.ip, ADMIN_TIMEOUT) else {
+        return; // no access or blocked; `query user` would fail the same way
+    };
+    if r.mac.is_none() {
+        r.mac = w.mac; // the only MAC source for hosts on other VLANs
+        r.vendor = r.mac.as_deref().and_then(identify::vendor);
+    }
+    if r.netbios_name.is_none() {
+        r.netbios_name = w.computer;
+    }
+    r.domain = w.domain;
+    r.os_name = w.os;
+    r.model = w.model;
+    merge_users(&mut r.users, w.user.into_iter().collect());
+    merge_users(&mut r.users, netbios::remote_sessions(r.ip));
+    r.device = Some(identify::classify(r, cfg.gateway, false));
 }
 
 fn scan_host(ip: Ipv4Addr, cfg: &ScanConfig, arp: &ArpCache) -> HostResult {
@@ -247,20 +328,6 @@ fn scan_host(ip: Ipv4Addr, cfg: &ScanConfig, arp: &ArpCache) -> HostResult {
         if r.hostname.is_none() {
             r.hostname = dns_lookup::get_hostname().ok();
         }
-    } else if cfg.admin_queries && looks_windows(&r) {
-        if let Some(w) = wmi::query(ip, Duration::from_secs(20)) {
-            if r.mac.is_none() {
-                r.mac = w.mac; // the only MAC source for hosts on other VLANs
-            }
-            if r.netbios_name.is_none() {
-                r.netbios_name = w.computer;
-            }
-            r.domain = w.domain;
-            r.os_name = w.os;
-            r.model = w.model;
-            merge_users(&mut r.users, w.user.into_iter().collect());
-        }
-        merge_users(&mut r.users, netbios::remote_sessions(ip));
     }
 
     r.vendor = r.mac.as_deref().and_then(identify::vendor);
@@ -287,10 +354,6 @@ fn reverse_dns(ip: Ipv4Addr, timeout: Duration) -> Option<String> {
 }
 
 /// Worth spending an admin query on: RPC/SMB/RDP open, or answers NetBIOS.
-fn looks_windows(r: &HostResult) -> bool {
-    [135, 139, 445, 3389].iter().any(|p| r.open_ports.contains(p)) || r.netbios_name.is_some()
-}
-
 fn merge_users(into: &mut Vec<String>, more: Vec<String>) {
     for u in more {
         if !into.iter().any(|x| x.eq_ignore_ascii_case(&u)) {
