@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Build a universal (Apple Silicon + Intel) HappyIP.app and wrap it in a DMG.
 # Usage: scripts/package-macos.sh   → dist/HappyIP-macOS.dmg
+#
+# Signing (optional). Without these the app gets an ad-hoc signature, and
+# macOS asks users to approve it by hand the first time.
+#   MACOS_SIGN_IDENTITY   "Developer ID Application: Your Name (TEAMID)"
+#   MACOS_NOTARY_PROFILE  a keychain profile made with
+#                         `xcrun notarytool store-credentials`; when set, the
+#                         DMG is also notarized and stapled.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,11 +49,29 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </dict></plist>
 EOF
 
-# Ad-hoc signature (no Apple Developer ID): required for Apple Silicon.
-codesign --force --deep --sign - "$APP"
+if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+  # Developer ID signature with the hardened runtime, as notarization requires.
+  codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$APP"
+  codesign --verify --strict "$APP"
+else
+  # Ad-hoc signature (no Apple Developer ID): required for Apple Silicon.
+  codesign --force --deep --sign - "$APP"
+fi
 
 mkdir -p "$OUT/dmg" && cp -R "$APP" "$OUT/dmg/" && ln -s /Applications "$OUT/dmg/Applications"
 rm -f "$OUT/HappyIP-macOS.dmg"
 hdiutil create -volname "HappyIP $VERSION" -srcfolder "$OUT/dmg" -ov -format UDZO "$OUT/HappyIP-macOS.dmg" >/dev/null
 rm -rf "$OUT/dmg"
+
+if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+  codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$OUT/HappyIP-macOS.dmg"
+  if [ -n "${MACOS_NOTARY_PROFILE:-}" ]; then
+    xcrun notarytool submit "$OUT/HappyIP-macOS.dmg" --keychain-profile "$MACOS_NOTARY_PROFILE" --wait
+    xcrun stapler staple "$OUT/HappyIP-macOS.dmg"
+  else
+    echo "Signed but not notarized (set MACOS_NOTARY_PROFILE to notarize)."
+  fi
+else
+  echo "Not signed with a Developer ID (set MACOS_SIGN_IDENTITY to sign)."
+fi
 echo "Built $OUT/HappyIP-macOS.dmg"
