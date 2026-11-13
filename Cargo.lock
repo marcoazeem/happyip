@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "happyip"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dns-lookup",
@@ -1483,8 +1483,10 @@ dependencies = [
  "egui_extras",
  "egui_software_backend",
  "if-addrs",
+ "libc",
  "mac_address",
  "rfd",
+ "socket2",
  "webbrowser",
  "winresource",
 ]

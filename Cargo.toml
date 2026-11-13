@@ -1,6 +1,6 @@
 [package]
 name = "happyip"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "Fast LAN scanner for Windows and macOS: IPs, MACs, vendors, logged-in users, device types and HTML reports"
 license = "MIT"
@@ -15,7 +15,11 @@ egui_software_backend = "0.0.3"
 if-addrs = "0.15.0"
 mac_address = "1.2.1"
 rfd = "0.17.2"
+socket2 = "0.6"
 webbrowser = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 lto = true
