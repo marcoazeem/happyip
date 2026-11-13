@@ -564,6 +564,7 @@ fn connect_all(ip: Ipv4Addr, ports: &[u16], timeout: Duration) -> Vec<(u16, Port
             states.push((port, PortState::NoAnswer));
             continue;
         };
+        fail_fast_when_refused(&sock);
         match sock.connect(&SocketAddr::new(IpAddr::V4(ip), port).into()) {
             Ok(()) => states.push((port, PortState::Open)),
             Err(e) if in_progress(&e) => pending.push((port, sock)),
@@ -596,6 +597,62 @@ fn connect_all(ip: Ipv4Addr, ports: &[u16], timeout: Duration) -> Vec<(u16, Port
     states.extend(pending.into_iter().map(|(port, _)| (port, PortState::NoAnswer)));
     states
 }
+
+/// Windows answers a refused connection by trying again twice, half a
+/// second apart, before reporting it. That takes about as long as the
+/// default timeout, so a host whose ports are all closed (and which doesn't
+/// answer ping) would look dead. Turning off the retries for this socket
+/// makes "refused" come back at once. Needs Windows 8 / Server 2012; on
+/// older systems the call fails and nothing changes.
+#[cfg(windows)]
+fn fail_fast_when_refused(sock: &socket2::Socket) {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawSocket;
+
+    /// TCP_INITIAL_RTO_PARAMETERS
+    #[repr(C)]
+    struct InitialRto {
+        rtt_ms: u16,
+        max_syn_retransmissions: u8,
+    }
+    const SIO_TCP_INITIAL_RTO: u32 = 0x9800_0011;
+    const UNSPECIFIED_RTT: u16 = 0xFFFF; // keep the system's first timeout
+    const NO_SYN_RETRANSMISSIONS: u8 = 0xFE;
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        fn WSAIoctl(
+            socket: usize,
+            code: u32,
+            input: *const c_void,
+            input_len: u32,
+            output: *mut c_void,
+            output_len: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
+            completion: *mut c_void,
+        ) -> i32;
+    }
+    let params = InitialRto { rtt_ms: UNSPECIFIED_RTT, max_syn_retransmissions: NO_SYN_RETRANSMISSIONS };
+    let mut returned = 0u32;
+    // SAFETY: a valid socket, an input struct of the stated size, no output
+    // buffer and no overlapped I/O.
+    unsafe {
+        WSAIoctl(
+            sock.as_raw_socket() as usize,
+            SIO_TCP_INITIAL_RTO,
+            (&raw const params).cast(),
+            std::mem::size_of::<InitialRto>() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn fail_fast_when_refused(_sock: &socket2::Socket) {}
 
 /// A non-blocking connect that has started and will finish later.
 fn in_progress(e: &std::io::Error) -> bool {
@@ -860,14 +917,19 @@ mod tests {
         let (ports, answered) = probe_ports(Ipv4Addr::LOCALHOST, &[open, closed], Duration::from_millis(1000));
         assert_eq!(ports, vec![open]);
         assert!(answered);
-        let (ports, answered) = probe_ports(Ipv4Addr::LOCALHOST, &[closed], Duration::from_millis(1000));
-        assert!(ports.is_empty() && answered, "a refused connection still proves the host is up");
+        let started = Instant::now();
+        let (ports, answered) = probe_ports(Ipv4Addr::LOCALHOST, &[closed], Duration::from_millis(3000));
+        let took = started.elapsed();
+        assert!(ports.is_empty() && answered, "a refused connection still proves the host is up (waited {took:?})");
+        // "Refused" must arrive well inside the default 1000 ms timeout, or
+        // hosts with every port closed would be reported as not answering.
+        assert!(took < Duration::from_millis(700), "refusal took {took:?}");
     }
 
     #[test]
     fn more_ports_than_one_batch() {
         let ports: Vec<u16> = (20_000..20_150).collect();
-        let (open, answered) = probe_ports(Ipv4Addr::LOCALHOST, &ports, Duration::from_millis(500));
+        let (open, answered) = probe_ports(Ipv4Addr::LOCALHOST, &ports, Duration::from_millis(1000));
         assert!(open.len() < ports.len() && answered);
     }
 
