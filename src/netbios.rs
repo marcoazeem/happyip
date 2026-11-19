@@ -145,7 +145,8 @@ pub fn remote_sessions(ip: Ipv4Addr) -> Vec<String> {
 fn query_user_output(extra: &[&str]) -> Vec<String> {
     let mut args = vec!["user"];
     args.extend_from_slice(extra);
-    let Some(out) = crate::probe::run_hidden_timeout("query", &args, std::time::Duration::from_secs(5)) else {
+    // Fails whenever nobody is signed in or access is denied, so not logged.
+    let Ok(out) = crate::probe::run_hidden_timeout("query", &args, std::time::Duration::from_secs(5)) else {
         return Vec::new();
     };
     let mut users: Vec<String> = out
@@ -187,6 +188,33 @@ mod tests {
         assert_eq!(info.workgroup.as_deref(), Some("WORKGROUP"));
         assert_eq!(info.users, vec!["ALICE".to_string()]);
         assert_eq!(info.mac.as_deref(), Some("00:1A:2B:3C:4D:5E"));
+    }
+
+    #[test]
+    fn garbage_replies_are_rejected_not_fatal() {
+        // Anything can arrive on UDP 137; none of it may panic.
+        assert!(parse_response(&[]).is_none());
+        assert!(parse_response(&[0; 11]).is_none());
+        assert!(parse_response(&[0xFF; 12]).is_none());
+        assert!(parse_response(&[0xFF; 300]).is_none());
+        // A valid header whose name table is cut short at every length.
+        let mut d = vec![0x12, 0x34, 0x84, 0x00, 0, 0, 0, 1, 0, 0, 0, 0];
+        d.push(0x20);
+        d.extend(std::iter::repeat_n(b'A', 32));
+        d.extend_from_slice(&[0, 0, 0x21, 0, 1, 0, 0, 0, 0, 0, 0]);
+        d.push(200); // claims 200 names, has one
+        d.extend(entry("DESKTOP-1", 0x00, false));
+        for len in 0..d.len() {
+            assert!(parse_response(&d[..len]).is_none(), "truncated at {len}");
+        }
+        assert!(parse_response(&d).is_none());
+        // Name bytes that aren't text.
+        let mut d = d[..d.len() - 19].to_vec();
+        d.push(1);
+        d.extend_from_slice(&[0xFF; 15]);
+        d.extend_from_slice(&[0x00, 0x04, 0x00]);
+        let info = parse_response(&d).unwrap();
+        assert!(info.computer.is_some() && info.mac.is_none());
     }
 
     #[test]

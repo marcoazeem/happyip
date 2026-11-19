@@ -16,14 +16,16 @@ pub struct WmiInfo {
     pub mac: Option<String>,
 }
 
-pub fn query(ip: Ipv4Addr, timeout: Duration) -> Option<WmiInfo> {
+/// `Err` says why there are no details: access denied, the RPC/WMI ports are
+/// blocked, or the PC didn't answer in time.
+pub fn query(ip: Ipv4Addr, timeout: Duration) -> Result<WmiInfo, String> {
     if !cfg!(windows) {
-        return None;
+        return Err("admin queries are only available on Windows".into());
     }
     run(ip, timeout).map(|text| parse(&text, ip))
 }
 
-fn run(ip: Ipv4Addr, timeout: Duration) -> Option<String> {
+fn run(ip: Ipv4Addr, timeout: Duration) -> Result<String, String> {
     // `ip` is a parsed Ipv4Addr, so it can only ever be digits and dots.
     let script = format!(
         "$ErrorActionPreference='Stop';$c='{ip}';\
@@ -34,11 +36,7 @@ fn run(ip: Ipv4Addr, timeout: Duration) -> Option<String> {
          Get-WmiObject -ComputerName $c -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' |\
          ForEach-Object {{ 'NIC='+$_.MACAddress+'|'+($_.IPAddress -join ',') }}"
     );
-    crate::probe::run_hidden_timeout(
-        "powershell.exe",
-        &["-NoProfile", "-NonInteractive", "-Command", &script],
-        timeout,
-    )
+    crate::probe::run_powershell(&script, timeout)
 }
 
 fn parse(text: &str, ip: Ipv4Addr) -> WmiInfo {
@@ -84,6 +82,12 @@ fn parse(text: &str, ip: Ipv4Addr) -> WmiInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_survives_the_command_line() {
+        // `run` builds the same script; only the address varies.
+        assert!(crate::probe::is_plain_script("$c='10.20.0.42';Get-WmiObject -ComputerName $c -Filter 'IPEnabled=TRUE'"));
+    }
 
     #[test]
     fn parses_output() {

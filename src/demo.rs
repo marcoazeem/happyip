@@ -3,10 +3,13 @@
 
 use std::net::Ipv4Addr;
 
+use crate::ad::Directory;
+use crate::history::{Change, Seen};
 use crate::identify;
 use crate::scanner::{AliveBy, HostResult};
 
 pub const RANGE: &str = "10.20.0.0/24";
+pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 20, 0, 1);
 
 struct Sample {
     last_octet: u8,
@@ -40,8 +43,26 @@ const HOSTS: &[Sample] = &[
     Sample { last_octet: 99, ttl: 64, rtt_ms: 0.9, hostname: "build-01.corp.example", netbios: "", users: &[], mac: "00:12:F0:2D:4C:99", ports: &[22, 80, 443], web: "Jenkins" },
 ];
 
+/// The fictional domain behind the sample hosts, in the format the real
+/// Active Directory query returns (see `ad::parse`).
+const DIRECTORY: &str = "DOMAIN=corp.example\n\
+C=DC01|dc01.corp.example|Windows Server 2022 Standard|10.0 (20348)|Primary domain controller|CN=DC01,OU=Domain Controllers,DC=corp,DC=example|2026-11-12|532480|Server room\n\
+C=NAS|nas.corp.example|||File shares and backups|CN=NAS,OU=Servers,DC=corp,DC=example|2026-11-10|4096|Server room\n\
+C=DESKTOP-7HQ2K|desktop-7hq2k.corp.example|Windows 11 Pro|10.0 (26100)|Sales - J. Rivera|CN=DESKTOP-7HQ2K,OU=Sales,OU=Workstations,DC=corp,DC=example|2026-11-11|4096|1st floor\n\
+C=LAPTOP-FINANCE02|laptop-finance02.corp.example|Windows 11 Enterprise|10.0 (26100)|Finance - A. Chen|CN=LAPTOP-FINANCE02,OU=Finance,OU=Workstations,DC=corp,DC=example|2026-11-12|4096|2nd floor\n\
+C=DESKTOP-RECEPT|desktop-recept.corp.example|Windows 11 Pro|10.0 (22631)|Reception|CN=DESKTOP-RECEPT,OU=Front Desk,OU=Workstations,DC=corp,DC=example|2026-11-12|4096|Lobby\n\
+C=LAPTOP-DESIGN1|laptop-design1.corp.example|Windows 11 Enterprise|10.0 (26100)|Design - M. Okafor|CN=LAPTOP-DESIGN1,OU=Design,OU=Workstations,DC=corp,DC=example|2026-09-02|4098|2nd floor\n\
+S=10.20.0.0/24|HQ|VLAN 20 Staff|\n\
+S=10.30.0.0/24|HQ|VLAN 30 Guests|\n\
+S=10.40.0.0/23|Branch|Warehouse|\n\
+Z=0.20.10.in-addr.arpa\n";
+
+pub fn directory() -> Directory {
+    crate::ad::parse(DIRECTORY).expect("demo directory is valid")
+}
+
 pub fn results() -> Vec<HostResult> {
-    let gateway = Some(Ipv4Addr::new(10, 20, 0, 1));
+    let gateway = Some(GATEWAY);
     let mut out: Vec<HostResult> = HOSTS
         .iter()
         .map(|s| {
@@ -66,6 +87,7 @@ pub fn results() -> Vec<HostResult> {
             r.vendor = r.mac.as_deref().and_then(identify::vendor);
             r.open_ports = s.ports.to_vec();
             r.http_banner = some(s.web);
+            extras(&mut r);
             r.device = Some(identify::classify(&r, gateway, false));
             r
         })
@@ -74,5 +96,103 @@ pub fn results() -> Vec<HostResult> {
     let used: Vec<u8> = HOSTS.iter().map(|s| s.last_octet).collect();
     out.extend((1..=254u8).filter(|o| !used.contains(o)).map(|o| HostResult::new(Ipv4Addr::new(10, 20, 0, o))));
     out.sort_by_key(|r| r.ip);
+    // One device that was there at the previous scan and has gone.
+    if let Some(gone) = out.iter_mut().find(|r| r.ip.octets()[3] == 44) {
+        gone.change = Some(Change::Gone(Seen {
+            mac: Some("00:2B:67:19:C0:44".into()),
+            name: Some("LAPTOP-INTERN3".into()),
+            device: "Windows PC".into(),
+        }));
+    }
     out
+}
+
+/// What the previous scan is compared with, for the status bar.
+pub const CHANGES: &str = "since 2026-11-10 14:00: 1 new, 1 gone, 1 replaced";
+
+/// Details only some sample devices have: IPv6 addresses, what they say
+/// about themselves over SNMP / mDNS / UPnP / SSH / HTTPS, and changes
+/// since the previous scan.
+fn extras(r: &mut HostResult) {
+    let v6 = |list: &[&str]| list.iter().filter_map(|a| a.parse().ok()).collect::<Vec<_>>();
+    match r.ip.octets()[3] {
+        1 => {
+            r.ipv6 = v6(&["2001:db8:20::1", "fe80::215:6dff:fe4a:1001"]);
+            r.snmp = Some(crate::snmp::Info {
+                description: Some("UniFi Dream Machine Pro, Linux 4.19.152".into()),
+                name: Some("gateway".into()),
+                location: Some("Server room, rack 1".into()),
+            });
+        }
+        5 => r.ipv6 = v6(&["2001:db8:20::5"]),
+        12 => r.ipv6 = v6(&["2001:db8:20:0:9c1e:44ff:fe31:5c12"]),
+        14 => r.ipv6 = v6(&["2001:db8:20:0:3d5a:88ff:fe3a:14", "fe80::212:f0ff:fe88:3a14"]),
+        23 => {
+            r.ipv6 = v6(&["2001:db8:20:0:1463:8ff:fe5d:7a23"]);
+            r.model = Some("MacBookPro18,3".into());
+            r.mdns_services = vec!["airplay".into(), "smb".into(), "ssh".into()];
+            r.ssh_banner = Some("OpenSSH_9.9".into());
+        }
+        31 => r.tls_name = Some("HP LaserJet Pro M404dn".into()),
+        40 => r.change = Some(Change::MacChanged { was: "00:BC:99:21:7F:40".into() }),
+        57 => r.change = Some(Change::New),
+        60 => {
+            r.upnp = Some("Boardroom TV (Google Chromecast)".into());
+            r.mdns_services = vec!["googlecast".into()];
+        }
+        99 => r.ssh_banner = Some("OpenSSH_9.6p1 Ubuntu-3ubuntu13".into()),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sample network doubles as a regression test for device
+    /// identification: every host must come out as what it was written to be.
+    #[test]
+    fn sample_hosts_are_identified_as_intended() {
+        let dir = directory();
+        let mut results = results();
+        for r in &mut results {
+            r.enrich(Some(&dir), &dir.networks(), Some(GATEWAY));
+        }
+        let kind = |last: u8| results.iter().find(|r| r.ip.octets()[3] == last).unwrap().device_text();
+        let expected = [
+            (1, "Router / gateway"),
+            (5, "Domain controller"),
+            (8, "NAS / storage"),
+            (12, "Windows PC"),
+            (14, "Windows PC"),
+            (15, "Windows PC"),
+            (21, "Windows PC"),
+            (23, "Mac"),
+            (30, "Printer"),
+            (31, "Printer"),
+            (40, "IP camera"),
+            (52, "iPhone / iPad"),
+            (57, "Android phone / tablet"),
+            (60, "TV / media player"),
+            (61, "TV / media player"),
+            (75, "Smart home / IoT"),
+            (99, "Linux / Unix server"),
+        ];
+        for (last, want) in expected {
+            assert_eq!(kind(last), want, "10.20.0.{last}");
+        }
+        assert_eq!(results.len(), 254);
+        assert_eq!(results.iter().filter(|r| r.alive.is_some()).count(), HOSTS.len());
+    }
+
+    #[test]
+    fn directory_matches_the_sample_hosts() {
+        let dir = directory();
+        assert_eq!(dir.domain, "corp.example");
+        assert!(dir.warnings.is_empty());
+        let pc = dir.find(Some("LAPTOP-DESIGN1"), None).unwrap();
+        assert!(!pc.enabled, "one disabled account, to show the warning");
+        assert!(dir.find(Some("DC01"), None).unwrap().is_dc);
+        assert_eq!(dir.networks().len(), 3);
+    }
 }
