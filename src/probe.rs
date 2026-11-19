@@ -392,6 +392,7 @@ mod win {
 /// `ping` via the system command (macOS/Linux, and the Windows fallback).
 fn ping_command(ip: Ipv4Addr, timeout_ms: u64) -> Option<PingReply> {
     let ip_s = ip.to_string();
+    #[cfg(any(windows, target_os = "macos"))]
     let timeout = timeout_ms.max(100).to_string();
 
     #[cfg(windows)]
@@ -785,8 +786,12 @@ impl ArpCache {
 fn read_arp_table() -> HashMap<Ipv4Addr, String> {
     #[cfg(windows)]
     let out = run_hidden("arp", &["-a"]);
+    // Linux often has no `arp` any more (it's in the optional net-tools);
+    // `ip neigh` prints "10.0.0.1 dev eth0 lladdr aa:bb:.. REACHABLE".
     #[cfg(not(windows))]
-    let out = run_hidden("/usr/sbin/arp", &["-an"]).or_else(|| run_hidden("arp", &["-an"]));
+    let out = run_hidden("/usr/sbin/arp", &["-an"])
+        .or_else(|| run_hidden("arp", &["-an"]))
+        .or_else(|| run_hidden("ip", &["-4", "neigh", "show"]));
     out.map(|o| parse_arp(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
 }
 
@@ -865,6 +870,13 @@ mod tests {
         let m = parse_arp(mac);
         assert_eq!(m.get(&"192.168.1.1".parse().unwrap()).unwrap(), "00:1A:2B:3C:4D:5E");
         assert_eq!(m.len(), 1);
+
+        let linux = "192.168.1.1 dev eth0 lladdr 00:1a:2b:3c:4d:5e REACHABLE\n\
+                     192.168.1.7 dev eth0 FAILED\n\
+                     192.168.1.8 dev eth0 lladdr aa:bb:cc:00:11:22 STALE";
+        let m = parse_arp(linux);
+        assert_eq!(m.get(&"192.168.1.1".parse().unwrap()).unwrap(), "00:1A:2B:3C:4D:5E");
+        assert_eq!(m.len(), 2);
 
         let win = "Interface: 192.168.1.5 --- 0xb\n  Internet Address      Physical Address      Type\n  \
                    192.168.1.1           aa-bb-cc-dd-ee-ff     dynamic\n  \

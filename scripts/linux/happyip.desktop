@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=HappyIP
+Comment=Find every device on your network
+Exec=happyip
+Icon=happyip
+Terminal=false
+Categories=Network;System;

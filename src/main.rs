@@ -16,10 +16,12 @@ mod probe;
 mod report;
 mod scanner;
 mod settings;
+mod sha256;
 mod snmp;
 mod ssdp;
 mod targets;
 mod tls;
+mod update;
 mod util;
 mod wmi;
 
@@ -50,10 +52,13 @@ const ERROR_COLOR: Color32 = Color32::from_rgb(224, 82, 60);
 
 fn main() {
     diag::install_panic_hook();
+    update::clean_up();
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         // happyip --cli [range...] [--report file.html] [--csv file] [--json file] ...
         Some("--cli") => std::process::exit(cli::run(args.get(2..).unwrap_or_default())),
+        Some("--version" | "-V") => println!("HappyIP {}", update::current_version()),
+        Some("--update") => std::process::exit(cli::update()),
         Some("--help" | "-h") => println!("{}\n\nWithout --cli, HappyIP opens its window (--demo shows sample data).", cli::USAGE),
         Some("--demo-report") => {
             let path = args.get(2).map(String::as_str).unwrap_or("happyip-demo-report.html");
@@ -256,6 +261,20 @@ enum AdState {
     Failed(String),
 }
 
+/// Looking for, downloading and installing a newer version. Shared with
+/// the background thread doing the work.
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(update::Release),
+    Installing(String),
+    /// Installed; start `target` to run it.
+    Installed { version: String, target: std::path::PathBuf },
+    /// `quiet` failures (the check at startup) only go to the log.
+    Failed { error: String, quiet: bool },
+}
+
 /// A text box whose content was rejected, shown in the error colour until
 /// it's edited.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -329,6 +348,9 @@ struct App {
     admin_answered: usize,
     admin_failed: usize,
 
+    update: Arc<Mutex<UpdateState>>,
+    check_updates: bool,
+
     /// Settings as last written to disk, and when that was last checked.
     saved: settings::Settings,
     save_checked: Instant,
@@ -395,10 +417,15 @@ impl App {
             admin_done: 0,
             admin_answered: 0,
             admin_failed: 0,
+            update: Arc::new(Mutex::new(UpdateState::Idle)),
+            check_updates: saved.check_updates,
             window: saved.window,
             saved,
             save_checked: Instant::now(),
         };
+        if app.check_updates && !demo {
+            app.check_for_update(true);
+        }
         app.rebuild_networks(if demo { Vec::new() } else { targets::routed_networks() });
         if demo {
             *lock(&app.ad_state) = AdState::Ready(Arc::new(demo::directory()));
@@ -489,6 +516,7 @@ impl App {
             discovery: self.local_discovery,
             snmp: self.snmp,
             snmp_community: Some(self.snmp_community.trim().to_string()).filter(|c| !c.is_empty()),
+            check_updates: self.check_updates,
             sort: Some(self.sort.0.name().into()),
             sort_ascending: self.sort.1,
             window: self.window,
@@ -963,6 +991,121 @@ impl App {
         if self.favourites.len() == before {
             self.favourites.push(settings::Favourite { range, ports: self.ports.clone() });
         }
+    }
+
+    /// Look for a newer version in the background. `quiet` is for the
+    /// automatic check at startup, which stays silent unless it finds one.
+    fn check_for_update(&mut self, quiet: bool) {
+        {
+            let mut state = lock(&self.update);
+            if matches!(*state, UpdateState::Checking | UpdateState::Installing(_) | UpdateState::Installed { .. }) {
+                return;
+            }
+            *state = UpdateState::Checking;
+        }
+        let (state, ctx) = (self.update.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let found = update::check();
+            *lock(&state) = match found {
+                Ok(Some(release)) => UpdateState::Available(release),
+                Ok(None) => UpdateState::UpToDate,
+                Err(error) => UpdateState::Failed { error, quiet },
+            };
+            ctx.request_repaint();
+        });
+    }
+
+    fn install_update(&mut self, release: update::Release) {
+        if !release.installable() {
+            // No in-app download for this system: show where to get it.
+            self.run_action(RowAction::Web(update::RELEASES_PAGE.into()));
+            return;
+        }
+        *lock(&self.update) = UpdateState::Installing(release.version.clone());
+        let (state, ctx) = (self.update.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let installed = update::install(&release);
+            *lock(&state) = match installed {
+                Ok(target) => UpdateState::Installed { version: release.version, target },
+                Err(error) => UpdateState::Failed { error, quiet: false },
+            };
+            ctx.request_repaint();
+        });
+    }
+
+    /// The update controls at the right of the status bar.
+    fn update_controls(&mut self, ui: &mut egui::Ui) {
+        enum Do {
+            Nothing,
+            Install(update::Release),
+            Restart(std::path::PathBuf),
+            Report(String),
+        }
+        let mut todo = Do::Nothing;
+        {
+            let mut state = lock(&self.update);
+            match &*state {
+                UpdateState::Available(release) => {
+                    let label = RichText::new(format!("Update to {}", release.version)).strong().color(Color32::from_rgb(46, 160, 90));
+                    let tip = if release.installable() {
+                        format!("HappyIP {} is available (this is {}). Click to download and install it.", release.version, update::current_version())
+                    } else {
+                        format!("HappyIP {} is available. Click to open the download page.", release.version)
+                    };
+                    if ui.button(label).on_hover_text(tip).clicked() {
+                        todo = Do::Install(release.clone());
+                    }
+                }
+                UpdateState::Installing(version) => {
+                    ui.spinner();
+                    ui.label(format!("Downloading {version}…"));
+                }
+                UpdateState::Installed { version, target } => {
+                    let label = RichText::new(format!("Restart to use {version}")).strong().color(Color32::from_rgb(46, 160, 90));
+                    if ui.button(label).on_hover_text("The new version is installed. Restart HappyIP to switch to it.").clicked() {
+                        todo = Do::Restart(target.clone());
+                    }
+                }
+                UpdateState::Failed { error, quiet } => {
+                    diag::log(format!("update: {error}"));
+                    if !quiet {
+                        todo = Do::Report(format!("⚠ Update: {error}"));
+                    }
+                    *state = UpdateState::Idle;
+                }
+                UpdateState::UpToDate => {
+                    ui.label(RichText::new("up to date").weak());
+                }
+                UpdateState::Checking => {
+                    ui.spinner();
+                }
+                UpdateState::Idle => {}
+            }
+        }
+        match todo {
+            Do::Nothing => {}
+            Do::Install(release) => self.install_update(release),
+            Do::Report(message) => self.status = message,
+            Do::Restart(target) => {
+                self.save_settings();
+                match update::relaunch(&target) {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => self.fail(e),
+                }
+            }
+        }
+        ui.menu_button(format!("v{}", update::current_version()), |ui| {
+            if ui.button("Check for updates").clicked() {
+                self.check_for_update(false);
+                ui.close();
+            }
+            ui.checkbox(&mut self.check_updates, "Check when HappyIP starts")
+                .on_hover_text("Asks github.com whether a newer version has been published. Nothing is downloaded or installed until you click Update.");
+            if ui.button("Release notes and downloads").clicked() {
+                self.run_action(RowAction::Web(update::RELEASES_PAGE.into()));
+                ui.close();
+            }
+        });
     }
 
     fn copy_diagnostics(&mut self) {
@@ -1792,6 +1935,9 @@ impl App {
                         .clicked()
                     {
                         self.copy_diagnostics();
+                    }
+                    if !demo_mode() {
+                        self.update_controls(ui);
                     }
                     if !self.results.is_empty() {
                         ui.label(format!(

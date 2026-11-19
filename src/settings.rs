@@ -21,6 +21,8 @@ pub struct Settings {
     /// Try SNMP on live hosts, with this community string.
     pub snmp: bool,
     pub snmp_community: Option<String>,
+    /// Look for a newer version on GitHub when HappyIP starts.
+    pub check_updates: bool,
     /// Column the table is sorted by (see `SortKey::name`) and its direction.
     pub sort: Option<String>,
     pub sort_ascending: bool,
@@ -62,6 +64,7 @@ impl Default for Settings {
             discovery: true,
             snmp: false,
             snmp_community: None,
+            check_updates: true,
             sort: None,
             sort_ascending: true,
             window: None,
@@ -134,6 +137,7 @@ fn parse(text: &str) -> Settings {
         discovery: flag("discovery", d.discovery),
         snmp: flag("snmp", d.snmp),
         snmp_community: text("snmp_community"),
+        check_updates: flag("check_updates", d.check_updates),
         sort: text("sort"),
         sort_ascending: flag("sort_ascending", d.sort_ascending),
         window: map.get("window").and_then(|v| {
@@ -170,7 +174,8 @@ pub fn serialize(s: &Settings) -> String {
     // List items can't hold their separators; ranges and ports never do.
     let item = |v: &str| v.replace(['\r', '\n', '|', '~'], " ");
     let lists = format!(
-        "discovery={}\nsnmp={}\nsnmp_community={}\nfilter={}\ndetails={}\nhidden={}\nwidths={}\nrecent={}\nfavourites={}\n",
+        "check_updates={}\ndiscovery={}\nsnmp={}\nsnmp_community={}\nfilter={}\ndetails={}\nhidden={}\nwidths={}\nrecent={}\nfavourites={}\n",
+        b(s.check_updates),
         b(s.discovery),
         b(s.snmp),
         clean(&s.snmp_community),
@@ -217,6 +222,7 @@ mod tests {
             discovery: false,
             snmp: true,
             snmp_community: Some("lab-ro".into()),
+            check_updates: false,
             sort: Some("vendor".into()),
             sort_ascending: false,
             window: Some((1400.0, 900.0)),

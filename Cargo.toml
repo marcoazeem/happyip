@@ -1,8 +1,8 @@
 [package]
 name = "happyip"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
-description = "Fast LAN scanner for Windows and macOS: IPs, MACs, vendors, logged-in users, device types and HTML reports"
+description = "Fast LAN scanner for Windows, macOS and Linux: IPs, MACs, vendors, logged-in users, device types and HTML reports"
 license = "MIT"
 repository = "https://github.com/marcoazeem/happyip"
 

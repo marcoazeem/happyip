@@ -40,29 +40,26 @@ pub fn open_web(url: &str) -> Result<(), String> {
     webbrowser::open(url).map_err(|e| format!("could not open {url}: {e}"))
 }
 
-#[allow(unused_variables)]
 fn launch(program: &str, arg: String) -> Result<(), String> {
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        std::process::Command::new(crate::probe::program_path(program))
-            .arg(arg)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("could not start {program}: {e}"))
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        Err("not available on this system".into())
-    }
+    std::process::Command::new(crate::probe::program_path(program))
+        .arg(arg)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start {program}: {e}"))
 }
 
-/// Opens the system Remote Desktop client: `mstsc` on Windows, or the
-/// Microsoft "Windows App" (rdp:// link) on macOS.
+/// How a link (`rdp://`, `smb://`, `ssh://`, `vnc://`) is handed to the
+/// desktop on systems other than Windows.
+const OPEN_LINK: &str = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
+
+/// Opens the system Remote Desktop client: `mstsc` on Windows, the
+/// Microsoft "Windows App" (rdp:// link) on macOS, or whichever client
+/// handles rdp:// links on Linux (e.g. Remmina).
 pub fn open_remote_desktop(target: &str) -> Result<(), String> {
     if cfg!(windows) {
         launch("mstsc", format!("/v:{target}"))
     } else {
-        launch("/usr/bin/open", format!("rdp://full%20address=s:{target}"))
+        launch(OPEN_LINK, format!("rdp://full%20address=s:{target}"))
     }
 }
 
@@ -71,7 +68,7 @@ pub fn open_shares(target: &str) -> Result<(), String> {
     if cfg!(windows) {
         launch("explorer.exe", format!("\\\\{target}"))
     } else {
-        launch("/usr/bin/open", format!("smb://{target}"))
+        launch(OPEN_LINK, format!("smb://{target}"))
     }
 }
 
@@ -93,7 +90,7 @@ pub fn open_ssh(target: &str) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        launch("/usr/bin/open", format!("ssh://{target}"))
+        launch(OPEN_LINK, format!("ssh://{target}"))
     }
 }
 
@@ -103,7 +100,7 @@ pub fn open_vnc(target: &str) -> Result<(), String> {
     if cfg!(windows) {
         launch("explorer.exe", format!("vnc://{target}"))
     } else {
-        launch("/usr/bin/open", format!("vnc://{target}"))
+        launch(OPEN_LINK, format!("vnc://{target}"))
     }
 }
 

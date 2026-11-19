@@ -29,7 +29,40 @@ Options:
   --no-ad          skip the Active Directory lookup
   --help           show this text
 
-Ports, timeout and threads default to what was last used in the window.";
+Ports, timeout and threads default to what was last used in the window.
+
+Other commands:
+  happyip --version   show the version
+  happyip --update    install the latest version from GitHub, if newer";
+
+/// `happyip --update`: check GitHub and install a newer version. Returns
+/// the process exit code.
+pub fn update() -> i32 {
+    use crate::update;
+    println!("HappyIP {} — checking {} …", update::current_version(), update::RELEASES_PAGE);
+    let release = match update::check() {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            println!("This is the latest version.");
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    println!("Version {} is available; downloading…", release.version);
+    match update::install(&release) {
+        Ok(target) => {
+            println!("Updated to {} ({}).", release.version, target.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Options {

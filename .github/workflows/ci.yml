@@ -10,12 +10,13 @@ permissions:
 
 jobs:
   test:
-    # Windows is the main target and has its own code paths (ICMP/ARP API
-    # calls, PowerShell, socket select), so it is built and tested for real.
+    # Each system has its own code paths (Windows: ICMP/ARP API calls,
+    # PowerShell, socket select; Linux: ip/ping tools), so all three are
+    # built and tested for real.
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,3 +28,6 @@ jobs:
         run: cargo test --locked
       - name: Clippy
         run: cargo clippy --locked --all-targets
+      - name: Updater end-to-end
+        shell: bash
+        run: scripts/test-update.sh

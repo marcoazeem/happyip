@@ -29,8 +29,11 @@
 |---|---|---|
 | **Windows** | [HappyIP-Windows-x64.exe](https://github.com/marcoazeem/happyip/releases/latest/download/HappyIP-Windows-x64.exe) | Windows 10 / 11 and Server 2016+ (64-bit). Also built to run on Windows 7 / 8 and Server 2008 R2 / 2012 (these need the [Universal C Runtime](https://support.microsoft.com/help/2999226) update). |
 | **macOS** | [HappyIP-macOS.dmg](https://github.com/marcoazeem/happyip/releases/latest/download/HappyIP-macOS.dmg) | macOS 11 Big Sur or later, Apple Silicon and Intel (universal) |
+| **Linux** | [x64](https://github.com/marcoazeem/happyip/releases/latest/download/HappyIP-Linux-x64.tar.gz) · [ARM64](https://github.com/marcoazeem/happyip/releases/latest/download/HappyIP-Linux-arm64.tar.gz) | Ubuntu 22.04, Debian 12, Fedora 36 or later (glibc 2.35+), X11 or Wayland |
 
-There's nothing to install on Windows: it's a single portable `.exe`. On Mac, open the DMG and drag **HappyIP** into **Applications**.
+There's nothing to install on Windows: it's a single portable `.exe`. On Mac, open the DMG and drag **HappyIP** into **Applications**. On Linux, unpack the archive and run `./happyip`, or `./install.sh` to add it to your applications menu.
+
+**Updates:** HappyIP checks GitHub for a newer version when it starts and shows an **Update to …** button in the bottom-right corner when there is one. One click downloads it, verifies it and installs it; nothing is installed without that click. The version menu next to it has *Check for updates* and a switch for the check at startup. From a terminal, `happyip --update` does the same.
 
 <details>
 <summary><b>First launch: "Windows protected your PC" / "Apple could not verify…"</b></summary>
@@ -120,6 +123,8 @@ On Windows, `--cli` output is only visible from a debug build or when redirected
 - **Firewalls that answer for empty addresses:** when nearly every unused address in a subnet "answers" identically over TCP only (all ports refused, or only web ports open), HappyIP treats those as a firewall or proxy replying and shows them as not alive ("Firewall reply").
 - **IPv6:** HappyIP scans IPv4 ranges. An IPv6 subnet is far too large to scan address by address, so IPv6 addresses are collected for the devices found over IPv4 (when their MAC is known); devices that only speak IPv6 are not listed.
 - **SNMP** is off by default. It sends the community string you enter (usually `public`) to every live host; devices configured to report failed SNMP logins may raise an alert. The community is saved in `settings.ini` as plain text and is left out of *Copy diagnostics* unless it is `public`.
+- **How updates are checked:** the check is one HTTPS request to github.com for a small text file naming the latest version and the SHA-256 of each download; it sends nothing about you or your network. The download itself is fetched with the system's `curl` over HTTPS and is only installed if its checksum matches. If HappyIP sits in a folder you can't write to (e.g. `C:\Program Files`), the update says so and you can download it by hand instead. Turn the startup check off in the version menu, or with `check_updates=0` in `settings.ini`.
+- **Linux:** the scan uses the system's `ping` and `ip` tools; logged-in users, admin queries and Active Directory are Windows features.
 - **Device types are best-effort guesses.** The report's *Identified by* column shows the clues behind each one.
 - **Only scan networks you own or are authorized to scan.**
 
@@ -137,7 +142,11 @@ cargo run --release
 ```sh
 scripts/package-macos.sh     # → dist/HappyIP-macOS.dmg (universal .app, needs macOS + Xcode CLT)
 scripts/package-windows.sh   # → dist/HappyIP-Windows-x64.exe (cross-compiled; needs `brew install mingw-w64`)
+scripts/package-linux.sh     # → dist/HappyIP-Linux-x64.tar.gz and -arm64.tar.gz (built in an Ubuntu 22.04 Docker container)
+scripts/release.sh           # builds all of the above and publishes a GitHub release
 ```
+
+**Publishing an update:** bump `version` in `Cargo.toml`, commit and push, then run `scripts/release.sh`. It publishes the downloads together with `update.txt`, the manifest installed copies read; once the release is the latest one, every copy of HappyIP offers it. `scripts/release.sh --prerelease` publishes without offering it to anyone yet.
 
 Both scripts sign the result when you provide a certificate (see the comments at the top of each): `MACOS_SIGN_IDENTITY` and `MACOS_NOTARY_PROFILE` for a Developer ID signature and notarization, `WINDOWS_SIGN_PFX` and `WINDOWS_SIGN_PASSWORD` for Authenticode (via `osslsigncode`).
 
@@ -162,6 +171,7 @@ On Windows you can also just run `cargo build --release`, but note that Rust's s
 | `src/snmp.rs` | SNMP description, name and location |
 | `src/ipv6.rs` | IPv6 addresses from the OS neighbour table |
 | `src/history.rs` | Previous scan of each range, and what changed |
+| `src/update.rs` | Self-update from GitHub Releases |
 | `src/report.rs` | HTML report |
 | `src/export.rs` | CSV and JSON exports |
 | `src/actions.rs` | Remote Desktop, web page and shares for a row |
