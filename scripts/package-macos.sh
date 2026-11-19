@@ -23,11 +23,11 @@ rm -rf "$APP" "$OUT/dmg" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resour
 lipo -create -output "$APP/Contents/MacOS/HappyIP" \
   target/aarch64-apple-darwin/release/happyip target/x86_64-apple-darwin/release/happyip
 
-# App icon from assets/icon.png (1024×1024).
+# App icon from assets/icon-macos.png (1024×1024, artwork with the margin macOS icons have).
 ICONSET=$(mktemp -d)/HappyIP.iconset && mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
-  sips -z $s $s assets/icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) assets/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s assets/icon-macos.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) assets/icon-macos.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/HappyIP.icns"
 

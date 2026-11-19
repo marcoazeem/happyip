@@ -13,7 +13,9 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1;
 T=$(mktemp -d)
 SRV="$T/srv"
 mkdir -p "$SRV/latest/download" "$SRV/download/v9.9.9" "$T/inst" "$T/home"
-trap 'kill "$SERVER" 2>/dev/null || true; rm -rf "$T"' EXIT
+# (On Windows the stopped server can keep its folder busy for a moment;
+# leftovers in the temp folder don't matter.)
+trap 'kill "$SERVER" 2>/dev/null || true; rm -rf "$T" 2>/dev/null || true' EXIT
 
 # A "new version": the same program with a few bytes added, so that it is a
 # different file that still runs.

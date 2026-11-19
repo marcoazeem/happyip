@@ -84,22 +84,72 @@ fn main() {
                 }
             }
         }
+        // Developer builds only: draw the demo window to an image file
+        // (for the README screenshot) without opening a window.
+        #[cfg(debug_assertions)]
+        Some("--screenshot") => screenshot(args.get(2).map(String::as_str).unwrap_or("happyip-screenshot.rgba")),
         Some(SOFTWARE_FLAG) => run_software(),
         _ => run_gpu(),
     }
 }
 
+/// Render the window with the demo data off-screen and save the raw pixels
+/// ("<width> <height>\n" then RGBA bytes). `scripts/screenshots.sh` turns
+/// that into docs/app.png.
+#[cfg(debug_assertions)]
+fn screenshot(path: &str) {
+    use egui_software_backend::{BufferMutRef, ColorFieldOrder, EguiSoftwareRender};
+    const SIZE: egui::Vec2 = egui::vec2(1860.0, 860.0);
+    const SCALE: f32 = 2.0;
+
+    let ctx = egui::Context::default();
+    ctx.set_theme(egui::Theme::Dark);
+    let mut app = App::new(ctx.clone());
+    // Show the newer parts of the window: a selected device with its
+    // details, and a set of columns that fits the picture.
+    let shown = [SortKey::Ip, SortKey::Ipv6, SortKey::Device, SortKey::NetBios, SortKey::Users, SortKey::Mac, SortKey::Ad, SortKey::Ports, SortKey::Changes];
+    app.hidden = SortKey::ALL.into_iter().filter(|c| !shown.contains(c)).collect();
+    app.col_widths.insert(SortKey::Ipv6, 235.0);
+    app.col_widths.insert(SortKey::Changes, 215.0);
+    app.show_details = true;
+    app.selected = HashSet::from([Ipv4Addr::new(10, 20, 0, 23)]);
+
+    let (w, h) = ((SIZE.x * SCALE) as usize, (SIZE.y * SCALE) as usize);
+    let mut pixels = vec![[0u8; 4]; w * h];
+    let mut renderer = EguiSoftwareRender::new(ColorFieldOrder::Rgba);
+    // A few frames, so that sizes measured in one frame are used in the next.
+    for _ in 0..4 {
+        let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE)), ..Default::default() };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(SCALE);
+        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let shapes = ctx.tessellate(out.shapes, out.pixels_per_point);
+        renderer.render(&mut BufferMutRef::new(&mut pixels, w, h), &shapes, &out.textures_delta, out.pixels_per_point);
+    }
+    let mut file = format!("{w} {h}\n").into_bytes();
+    file.extend(pixels.iter().flatten());
+    match std::fs::write(path, file) {
+        Ok(()) => eprintln!("Screenshot ({w}x{h}) written to {path}"),
+        Err(e) => {
+            eprintln!("error writing {path}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// `--demo` fills the window with a fictional network instead of scanning.
 fn demo_mode() -> bool {
-    std::env::args().any(|a| a == "--demo")
+    std::env::args().any(|a| a == "--demo" || a == "--screenshot")
 }
 
 fn viewport() -> egui::ViewportBuilder {
     // Reopen at the size the window had last time.
     let saved = if demo_mode() { None } else { settings::load().window };
     let (w, h) = saved.unwrap_or((1180.0, 720.0));
+    // The window / taskbar / Dock icon while running.
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).unwrap_or_default();
     egui::ViewportBuilder::default()
         .with_title("HappyIP")
+        .with_icon(std::sync::Arc::new(icon))
         .with_inner_size([w.max(760.0), h.max(400.0)])
         .with_min_inner_size([760.0, 400.0])
 }
@@ -241,7 +291,8 @@ impl SortKey {
             SortKey::Device | SortKey::Vendor | SortKey::Ad => 150.0,
             SortKey::NetBios => 140.0,
             SortKey::Users => 120.0,
-            SortKey::Mac | SortKey::Ports => 130.0,
+            SortKey::Mac => 150.0,
+            SortKey::Ports => 130.0,
             SortKey::Network | SortKey::Ipv6 => 190.0,
             SortKey::Domain => 110.0,
             SortKey::Hostname => 170.0,
@@ -434,7 +485,7 @@ impl App {
             app.range = demo::RANGE.into();
             app.scanned_range = demo::RANGE.into();
             app.hosts_done_in = Some(3.9);
-            app.status = format!("Done: {} scanned, {} alive in 3.9s (demo data)", app.total, app.alive_count());
+            app.status = format!("Done: {} scanned, {} alive in 3.9s; {} (demo data)", app.total, app.alive_count(), demo::CHANGES);
         } else if app.use_ad {
             app.load_ad();
         }
@@ -1568,13 +1619,13 @@ impl App {
         ui.heading(r.display_name().unwrap_or_else(|| r.ip.to_string()));
         ui.add_space(4.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("details").num_columns(2).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
-                for (label, value) in host_details(r) {
-                    ui.label(RichText::new(label).weak());
-                    ui.add(egui::Label::new(value).wrap());
-                    ui.end_row();
-                }
-            });
+            // Label above value: values such as IPv6 addresses and
+            // descriptions need the panel's full width.
+            for (label, value) in host_details(r) {
+                ui.label(RichText::new(label).weak().small());
+                ui.add(egui::Label::new(value).wrap());
+                ui.add_space(5.0);
+            }
         });
     }
 }

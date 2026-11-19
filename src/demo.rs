@@ -4,6 +4,7 @@
 use std::net::Ipv4Addr;
 
 use crate::ad::Directory;
+use crate::history::{Change, Seen};
 use crate::identify;
 use crate::scanner::{AliveBy, HostResult};
 
@@ -86,6 +87,7 @@ pub fn results() -> Vec<HostResult> {
             r.vendor = r.mac.as_deref().and_then(identify::vendor);
             r.open_ports = s.ports.to_vec();
             r.http_banner = some(s.web);
+            extras(&mut r);
             r.device = Some(identify::classify(&r, gateway, false));
             r
         })
@@ -94,7 +96,53 @@ pub fn results() -> Vec<HostResult> {
     let used: Vec<u8> = HOSTS.iter().map(|s| s.last_octet).collect();
     out.extend((1..=254u8).filter(|o| !used.contains(o)).map(|o| HostResult::new(Ipv4Addr::new(10, 20, 0, o))));
     out.sort_by_key(|r| r.ip);
+    // One device that was there at the previous scan and has gone.
+    if let Some(gone) = out.iter_mut().find(|r| r.ip.octets()[3] == 44) {
+        gone.change = Some(Change::Gone(Seen {
+            mac: Some("00:2B:67:19:C0:44".into()),
+            name: Some("LAPTOP-INTERN3".into()),
+            device: "Windows PC".into(),
+        }));
+    }
     out
+}
+
+/// What the previous scan is compared with, for the status bar.
+pub const CHANGES: &str = "since 2026-11-10 14:00: 1 new, 1 gone, 1 replaced";
+
+/// Details only some sample devices have: IPv6 addresses, what they say
+/// about themselves over SNMP / mDNS / UPnP / SSH / HTTPS, and changes
+/// since the previous scan.
+fn extras(r: &mut HostResult) {
+    let v6 = |list: &[&str]| list.iter().filter_map(|a| a.parse().ok()).collect::<Vec<_>>();
+    match r.ip.octets()[3] {
+        1 => {
+            r.ipv6 = v6(&["2001:db8:20::1", "fe80::215:6dff:fe4a:1001"]);
+            r.snmp = Some(crate::snmp::Info {
+                description: Some("UniFi Dream Machine Pro, Linux 4.19.152".into()),
+                name: Some("gateway".into()),
+                location: Some("Server room, rack 1".into()),
+            });
+        }
+        5 => r.ipv6 = v6(&["2001:db8:20::5"]),
+        12 => r.ipv6 = v6(&["2001:db8:20:0:9c1e:44ff:fe31:5c12"]),
+        14 => r.ipv6 = v6(&["2001:db8:20:0:3d5a:88ff:fe3a:14", "fe80::212:f0ff:fe88:3a14"]),
+        23 => {
+            r.ipv6 = v6(&["2001:db8:20:0:1463:8ff:fe5d:7a23"]);
+            r.model = Some("MacBookPro18,3".into());
+            r.mdns_services = vec!["airplay".into(), "smb".into(), "ssh".into()];
+            r.ssh_banner = Some("OpenSSH_9.9".into());
+        }
+        31 => r.tls_name = Some("HP LaserJet Pro M404dn".into()),
+        40 => r.change = Some(Change::MacChanged { was: "00:BC:99:21:7F:40".into() }),
+        57 => r.change = Some(Change::New),
+        60 => {
+            r.upnp = Some("Boardroom TV (Google Chromecast)".into());
+            r.mdns_services = vec!["googlecast".into()];
+        }
+        99 => r.ssh_banner = Some("OpenSSH_9.6p1 Ubuntu-3ubuntu13".into()),
+        _ => {}
+    }
 }
 
 #[cfg(test)]

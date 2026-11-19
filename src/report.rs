@@ -131,7 +131,7 @@ pub fn html(meta: &ReportMeta, hosts: &[&HostResult]) -> String {
 @media (prefers-color-scheme:dark){{:root{{--bg:#0f1218;--card:#171b23;--ink:#e6e9ef;--muted:#8d95a6;--line:#2a303c;--accent:#60a5fa;--chip:#1e2533;--user:#163222;--userink:#86efac}}}}
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif}}
-.wrap{{max-width:1400px;margin:0 auto;padding:28px 20px 48px}}
+.wrap{{max-width:1760px;margin:0 auto;padding:28px 20px 48px}}
 h1{{margin:0 0 4px;font-size:24px}}
 .meta{{color:var(--muted);font-size:13px}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:22px 0 14px}}
@@ -159,7 +159,7 @@ td:nth-child(2){{min-width:200px}}
 .icon{{margin-right:6px}}
 .user{{display:inline-block;background:var(--user);color:var(--userink);border-radius:6px;padding:1px 8px;margin:1px 2px 1px 0;font-weight:600}}
 .muted{{color:var(--muted)}}
-.clues{{color:var(--muted);font-size:12px;max-width:320px}}
+.clues{{color:var(--muted);font-size:12px;min-width:230px;max-width:340px}}
 footer{{color:var(--muted);font-size:12px;margin-top:16px}}
 @media print{{body{{background:#fff}}.bar{{display:none}}.chip{{cursor:default}}.card,.tablewrap{{border-color:#ccc}}th{{position:static}}}}
 </style></head><body><div class="wrap">

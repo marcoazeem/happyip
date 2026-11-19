@@ -5,14 +5,14 @@
 <h1 align="center">HappyIP</h1>
 
 <p align="center">
-  A fast, friendly network scanner for <b>Windows</b> and <b>macOS</b>, in the spirit of Angry IP Scanner.<br>
+  A fast, friendly network scanner for <b>Windows</b>, <b>macOS</b> and <b>Linux</b>, in the spirit of Angry IP Scanner.<br>
   Find every device on your network with its <b>computer name, logged-in user, MAC address, vendor and device type</b>,
-  then export a clean report.
+  see what changed since last time, and export a clean report.
 </p>
 
 <p align="center">
   <a href="https://github.com/marcoazeem/happyip/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/marcoazeem/happyip?label=download&color=22c55e"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0e7490">
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0e7490">
   <img alt="Rust" src="https://img.shields.io/badge/made%20with-Rust-orange">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
@@ -144,7 +144,11 @@ scripts/package-macos.sh     # → dist/HappyIP-macOS.dmg (universal .app, needs
 scripts/package-windows.sh   # → dist/HappyIP-Windows-x64.exe (cross-compiled; needs `brew install mingw-w64`)
 scripts/package-linux.sh     # → dist/HappyIP-Linux-x64.tar.gz and -arm64.tar.gz (built in an Ubuntu 22.04 Docker container)
 scripts/release.sh           # builds all of the above and publishes a GitHub release
+scripts/screenshots.sh       # redraws the pictures in docs/ from the demo data
+scripts/test-update.sh       # tests the updater end to end against a local stand-in for GitHub
 ```
+
+The icons in `assets/` are made from `assets/icon-source.png`: `icon.png` (transparent corners), `icon.ico` (Windows), `icon-macos.png` (with the margin macOS icons have) and `icon-256.png` (the window icon).
 
 **Publishing an update:** bump `version` in `Cargo.toml`, commit and push, then run `scripts/release.sh`. It publishes the downloads together with `update.txt`, the manifest installed copies read; once the release is the latest one, every copy of HappyIP offers it. `scripts/release.sh --prerelease` publishes without offering it to anyone yet.
 
